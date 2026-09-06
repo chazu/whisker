@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# PROTOTYPE launcher: build, then open a disposable shell in the current cwd.
+set -euo pipefail
+whisker_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+if command -v cargo >/dev/null 2>&1; then
+    whisker_cargo=$(command -v cargo)
+elif [[ -x $HOME/.cargo/bin/cargo ]]; then
+    whisker_cargo=$HOME/.cargo/bin/cargo
+else
+    printf 'Rust/Cargo is required to build this prototype.\n' >&2
+    exit 1
+fi
+
+if [[ -x /opt/homebrew/bin/bash ]]; then
+    whisker_bash=/opt/homebrew/bin/bash
+else
+    whisker_bash=$(command -v bash)
+fi
+if ! "$whisker_bash" -c '(( BASH_VERSINFO[0] >= 5 ))'; then
+    printf 'This prototype needs Bash 5+ on PATH.\n' >&2
+    exit 1
+fi
+
+"$whisker_cargo" build --quiet --manifest-path "$whisker_root/Cargo.toml" --target-dir "$whisker_root/target"
+export WHISKER_BIN=$whisker_root/target/debug/whisker
+# No normal startup files or saved history writes in this temporary session.
+export HISTFILE=/dev/null
+exec "$whisker_bash" --noprofile --rcfile "$whisker_root/shell/prototype.bash" -i

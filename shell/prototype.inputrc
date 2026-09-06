@@ -1,0 +1,7 @@
+# Load the user's normal Readline preferences, then the Bash-only shortcut.
+$include ~/.inputrc
+$if Bash
+set editing-mode emacs
+"\eo": "\e[99~"
+"\C-l": "\e[98~"
+$endif

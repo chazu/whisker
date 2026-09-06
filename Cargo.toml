@@ -1,0 +1,9 @@
+[package]
+name = "whisker"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Proof of concept for a switchable two-line Bash prompt"
+
+[dependencies]
+unicode-width = "0.2.2"
