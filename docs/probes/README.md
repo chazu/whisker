@@ -16,7 +16,9 @@ python3 -m venv .venv && .venv/bin/pip install pyte
 .venv/bin/python docs/probes/async.py           # can a signal repaint mid-typing?
 .venv/bin/python docs/probes/statefile.py       # background state + refresh key
 .venv/bin/python docs/probes/altscreen.py       # design C; see the caveat below
-.venv/bin/python docs/probes/graphics.py        # design D; sixel and \[ \] accounting
+.venv/bin/python docs/probes/graphics.py        # \[ \] width accounting
+.venv/bin/python docs/probes/pixelgrid.py --selftest   # design D, the pixel grid
+python3 docs/probes/pixelgrid.py               # ...and see it, in a real terminal
 ```
 
 The Bash probes need Bash 5+ (`/opt/homebrew/bin/bash` on this machine; edit the
@@ -30,10 +32,12 @@ Two worth rerunning if you doubt the document:
   buffer (mode 1049), so the overlay appears to leak onto the main screen.
   Source `altscreen.bash` in a real terminal and press Alt-O to test design C
   properly.
-- `graphics.py` decides design D on two grounds an emulator can judge: the real
-  binary blanks a sixel via `clean`, and a prompt that under-reports its width
-  misplaces the cursor. Whether a terminal *draws* the image is left to
-  `graphics.bash`, which must be sourced in a real terminal, and which is not
-  needed to reach the conclusion.
+- `graphics.py` shows why a *naive* graphics prompt breaks: the real binary
+  blanks a sixel via `clean`, and a prompt that under-reports its width
+  misplaces the cursor by exactly the amount it hid.
+- `pixelgrid.py` is design D and supersedes that objection. It renders the grid
+  as a real PNG placed in an exact number of cells with the cursor pinned.
+  `--selftest` needs no terminal and is the one to run in CI; running it plain
+  in a graphics-capable terminal shows the grid inline.
 
 `configs/` holds the Whisker configurations `integration.py` renders.

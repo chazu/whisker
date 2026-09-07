@@ -5,9 +5,10 @@
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
 
-Short answer: yes for the map and the position, with a measured cost of one to
-three screen rows. The alert part has a hard constraint that shapes the whole
-design, described under [Async is not available](#async-is-not-available).
+Short answer: yes for the map and the position, and cheaper than first thought.
+Drawn as a small image it costs one character cell rather than screen rows. The
+alert part has a hard constraint that shapes the whole design, described under
+[Async is not available](#async-is-not-available).
 
 Everything below marked *measured* was checked against Bash 5.3 in a real
 pseudo-terminal with a screen emulator; the probes are described in
@@ -82,7 +83,7 @@ lying to the user.
 
 ## Four designs
 
-### A. Inline strip, one row (recommended first step)
+### A. Inline strip, one row (now the fallback for design D)
 
 Keep the current single information row and add a compact grid to it.
 
@@ -168,48 +169,83 @@ terminal or multiplexer that does not support the mode degrades badly.
   terminals lacking `1049` is unknown and must be checked.
 - **Best for:** a "show me everything" key rather than routine movement.
 
-### D. Sixel or the kitty graphics protocol (rejected)
+### D. A pixel grid, drawn as an image (recommended)
 
-The obvious question, since a grid is a picture: draw it as one. Ghostty, which
-this was developed on, supports both sixel and the kitty protocol, so it is not
-an idle idea. It is still the wrong tool here, for three reasons in increasing
-order of severity.
+Since the grid is fundamentally a picture, draw it as one: a dot per node, a
+one-pixel gap between dots, and colour carrying state, sized so the whole thing
+fits inside one or two ordinary character cells.
 
-**Readline cannot measure a picture.** Bash needs the printing width of PS1 to
-place the cursor. Non-printing bytes go inside `\[ \]`, which means "these
-occupy zero columns". An image is not zero columns, so both choices are wrong:
-leave the escape unwrapped and Readline counts the payload's *bytes* as columns;
-wrap it and Readline believes the image takes no space at all. Measured with a
-prompt that makes the second claim about ten visible characters, Ctrl-A put the
-cursor at column 0 while the command's first character was at column 12. Every
-editing operation inherits that error. Padding with spaces to cover the image
-only relocates the problem onto the font's cell size, which the prompt does not
-know.
+```
+   . . .        .  idle       @  you
+   . @ !        o  ok         !  needs attention
+   . o .
+```
 
-**It would require weakening the one defence that matters.** `clean` replaces
-every control character with a space, and that single rule is what makes an
-untrusted state file safe (see [Alerts](#when-it-is-collected)). Graphics are
-delivered by `ESC P ... ESC \` or `ESC _G ... ESC \`, so a picture segment
-means permitting device-control strings through the very function that exists
-to strip them. Verified against the real binary: the sixel came out as inert
-text with its introducer and terminator blanked, which is `clean` doing its
-job. Trading that for a prettier grid is a bad exchange, and it is the reason
-this is rejected outright rather than merely deferred.
+An earlier revision of this document rejected graphics outright. That
+rejection was wrong, and the reasoning is worth keeping because two of the
+three objections dissolve once the image is placed properly.
 
-**It buys nothing over text.** The strip in design A is nine glyphs. Unicode
-already draws circles, and the terminal already colours them. A picture would
-add pixel-accurate node shapes that nobody needs, at the cost of portability to
-every terminal and multiplexer without graphics support, where it degrades not
-to a plain grid but to a screenful of payload garbage.
+**Width is knowable, not guessed.** The objection was that Readline needs the
+printing width of `PS1` and an image has none. The kitty protocol answers this
+directly: `c=` and `r=` place an image in an *exact* number of cells, scaling
+it to fit, and `C=1` tells the terminal not to move the cursor at all. So the
+prompt emits the escape inside `\[ \]`, where its zero-width claim is now
+true, and then emits exactly `c` real spaces for the image to sit on. Readline
+counts those spaces, and the count is correct by construction.
 
-The probes are `graphics.py` for what an emulator can decide and
-`graphics.bash` for what only a real terminal can. The second is written but
-not run here; the first two reasons are sufficient to reject D, so the third
-question, of whether Ghostty draws it nicely, does not need an answer.
+This was measured with an analogue pyte can execute: a prompt that draws two
+visible cells, restores the cursor, and then spends two countable spaces.
+With a 16-character command, Ctrl-A landed on column 4, exactly where the
+command begins, and Ctrl-E on column 20. Exact, where the naive `\[ \]`
+prompt was off by 12.
 
-**Recommendation:** build A, then add C as an on-demand overlay. Treat B's
-always-visible block as opt-in, since its permanent row cost is the largest
-thing being asked of the user.
+**It needs no relaxation of `clean`.** The other objection was that graphics
+escapes must pass through the function that strips control characters, which is
+the defence protecting the untrusted alert state file. That confused two paths.
+`clean` is applied to *segment output*, which is untrusted because anything can
+write it. A pixel grid is not segment output: Whisker generates the bytes
+itself from its own config and its own view states, the way it already emits
+its own SGR colour codes without laundering them. The state file keeps flowing
+through `clean` and keeps being neutralised. Verified that it still is.
+
+**Size.** Measured with a real PNG encoder. At a 16x34 pixel cell, a 3x3 grid
+with three-pixel dots and one-pixel gaps is 11x11 pixels and fits in **one
+cell**, with a payload around 110 bytes. One cell holds up to 4x8 nodes at that
+scale, or 5x11 with two-pixel dots; two cells hold 8x8. The grid is therefore
+free in the only currency design B was expensive in, which is screen space.
+
+One caveat found while building it: a single *device* pixel is not reliably
+visible on a HiDPI display, so the dot wants to be three or four pixels with
+the gap held at one. The probe keeps dot size and gap independent for exactly
+this reason.
+
+**What it still costs.**
+
+- **Portability.** Terminals without the protocol must get the text strip from
+  design A as a fallback, so A is not replaced, it is demoted to the fallback
+  path. Support is queryable at startup, so this is detectable rather than
+  hoped for.
+- **A cell size is required.** Sizing to whole cells needs pixels-per-cell from
+  `TIOCGWINSZ`, and some terminals report zero. That is also detectable, and it
+  selects the same text fallback.
+- **Multiplexers.** tmux and Zellij do not implement the kitty protocol.
+- **Colour alone carries the alert.** That is bad for colour-blind users and
+  invisible under `NO_COLOR`, which Whisker already honours strictly. The
+  alert dot needs a second channel, such as brightness or a fifth blank cell,
+  or the fallback must engage.
+
+`pixelgrid.py` implements all of this and self-tests without a terminal:
+`python3 docs/probes/pixelgrid.py --selftest`. Run it without arguments in a
+real terminal to see the grid inline.
+
+**Recommendation:** build D, with A's text strip as the fallback for terminals
+that cannot draw it, and C as an on-demand full map. B's always-visible text
+block is no longer worth building, since D delivers the same map for a fraction
+of the space.
+
+The `atomic` and `fallback` work from step 0 is *more* necessary now, not less:
+"draw the picture, or cleanly swap to the strip, but never show half of
+either" is precisely what `atomic` expresses.
 
 ## Alerts
 
@@ -339,13 +375,17 @@ is more honest about the shape.
 
 ## What could go wrong
 
-- **The grid becomes noise.** Nine nodes of `○` carry almost no information most
-  of the time. Mitigation: show the strip only when something is non-default,
+- **The grid becomes noise.** Nine idle nodes carry almost no information most
+  of the time. Mitigation: show the grid only when something is non-default,
   otherwise show position alone.
 - **Alerts train people to ignore them.** A flapping check is worse than no
   check. Any `changed` alert needs debouncing, and probably a minimum interval.
-- **The row cost is permanent but the benefit is occasional.** This is the
-  strongest argument for A over B.
+- **Two display paths must agree.** With D drawing an image and A drawing text,
+  a node that reads as alerting in one must alert in the other. Divergence
+  between them is the new version of the truncation bug.
+- **Colour is the only channel in D.** Under `NO_COLOR`, or for a colour-blind
+  user, a red dot and a green dot are the same dot. This needs a second channel
+  or it must fall back to text.
 - **A grid may be the wrong model.** If most people have five contexts and no
   natural second axis, a list with alert markers delivers most of the value for
   a fraction of the cost. Worth checking before building.
@@ -356,17 +396,22 @@ is more honest about the shape.
    shows a truncated grid that hides alerts, which is the one failure mode that
    makes the feature actively harmful. Worth doing regardless of the grid.
 1. **Strip rendering only.** Static grid from config, position marker, no
-   alerts. Proves the layout inside the existing one-row mechanism. Already
-   prototyped through the real configuration, so this is mostly a matter of
-   generating the strip rather than hand-writing it.
-2. **Navigation.** Leader key plus directional keys, with the existing
+   alerts. Proves the layout inside the existing one-row mechanism, and it is
+   the fallback every terminal gets, so it is worth building first even though
+   D is the recommended display. Already prototyped through the real
+   configuration, so this is mostly a matter of generating the strip rather
+   than hand-writing it.
+2. **The pixel grid (D)** behind capability detection, falling back to step 1.
+   `pixelgrid.py` already renders it; this is a matter of porting that to Rust
+   and querying support and cell size at startup.
+3. **Navigation.** Leader key plus directional keys, with the existing
    input-preservation checks extended to cover it.
-3. **Alert state file.** Reading and display only, with a documented format, so
+4. **Alert state file.** Reading and display only, with a documented format, so
    anything can write it.
-4. **A collector** that populates the file on a schedule.
-5. **Overlay (C)** for the full map.
+5. **A collector** that populates the file on a schedule.
+6. **Overlay (C)** for the full map.
 
-Steps 1 and 2 are useful alone: a grid you can move through is worth having even
+Steps 1 to 3 are useful alone: a grid you can move through is worth having even
 if nothing ever alerts.
 
 ## Open questions
@@ -399,8 +444,11 @@ emulator. Each probe drove an actual interactive shell.
 | Alert count from a state file | Works; segment and separator vanish at zero |
 | Hostile state file (`ESC[2J`, extra line) | Already neutralised by the existing `clean` and first-line rules |
 | `view next` as 2D movement | Single ring only; 2D needs a new subcommand |
-| Sixel through the real binary | Blanked by `clean` to inert text; graphics need that defence relaxed |
+| Sixel through the real binary | Blanked by `clean`; a picture must be generated internally, not via a segment |
 | Prompt that under-reports its width | Ctrl-A put the cursor at column 0 against text at column 12 |
+| Image sized to whole cells, cursor pinned | Exact: Ctrl-A at column 4, Ctrl-E at 20 for a 16-char command |
+| 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, ~110 byte payload |
+| Node capacity of one cell | 4x8 at 3px dots, 5x11 at 2px; two cells give 8x8 |
 
 The async result is the one that matters, because it converts "live dashboard"
 into "map that updates when you touch it". Better to know that before building
