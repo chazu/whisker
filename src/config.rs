@@ -73,11 +73,44 @@ pub struct ViewDef {
 pub struct Grid {
     pub rows: Vec<String>,
     pub columns: Vec<String>,
+    /// Where per-view state is read from, if configured.
+    ///
+    /// Collecting each node's status inline would not scale: one Kubernetes
+    /// check takes about 29 ms, so a nine-node grid would add a quarter of a
+    /// second to every prompt before touching a network. Something else writes
+    /// this file on its own schedule and the prompt only reads it, which costs
+    /// microseconds and cannot block.
+    pub state: Option<PathBuf>,
 }
 
 impl Grid {
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty() || self.columns.is_empty()
+    }
+}
+
+/// What a node is currently reporting.
+///
+/// Deliberately few: an alert either wants attention or it does not, and more
+/// levels would need more colours than a dot can carry legibly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum State {
+    /// Nothing is known about this node, which is the honest default.
+    #[default]
+    Unknown,
+    Ok,
+    /// Something wants the user's attention.
+    Alert,
+}
+
+impl State {
+    fn parse(word: &str) -> Option<Self> {
+        match word {
+            "ok" => Some(State::Ok),
+            "alert" => Some(State::Alert),
+            "unknown" => Some(State::Unknown),
+            _ => None,
+        }
     }
 }
 
@@ -195,6 +228,47 @@ impl Config {
         }
     }
 
+    /// Each view's current state, read from the configured state file.
+    ///
+    /// The file is untrusted: anything on the machine can write it, and a
+    /// collector may be halfway through rewriting it when the prompt reads. So
+    /// nothing here can fail. An unreadable file, a malformed line, an unknown
+    /// view name, or an unknown status word all leave the affected node
+    /// `Unknown` rather than raising an error, because a prompt that refuses
+    /// to draw is worse than one that admits it does not know.
+    ///
+    /// Format is one line per view, `NAME STATUS [anything else]`:
+    ///
+    /// ```text
+    /// infra_prod alert 2026-09-06T22:10:05 3 warning events
+    /// infra_ops  ok
+    /// ```
+    ///
+    /// Trailing words are ignored here, so a collector can record a timestamp
+    /// and a human-readable reason in the same line.
+    pub fn states(&self) -> Vec<State> {
+        let mut states = vec![State::Unknown; self.views.len()];
+        let Some(path) = &self.grid.state else {
+            return states;
+        };
+        let Ok(text) = fs::read_to_string(path) else {
+            return states;
+        };
+        for line in text.lines() {
+            let mut words = line.split_whitespace();
+            let (Some(name), Some(status)) = (words.next(), words.next()) else {
+                continue;
+            };
+            let Some(state) = State::parse(status) else {
+                continue;
+            };
+            if let Some(index) = self.views.iter().position(|view| view.name == name) {
+                states[index] = state;
+            }
+        }
+        states
+    }
+
     /// The grid as one line per row, each cell being a view name or `-` for an
     /// undefined cell.
     ///
@@ -205,17 +279,33 @@ impl Config {
         if self.grid.is_empty() {
             return Vec::new();
         }
+        let states = self.states();
         self.grid
             .rows
             .iter()
             .enumerate()
             .map(|(r, _)| {
-                let cells: Vec<&str> = (0..self.grid.columns.len())
+                let cells: Vec<String> = (0..self.grid.columns.len())
                     .map(|c| {
-                        self.views
+                        match self
+                            .views
                             .iter()
-                            .find(|view| view.at == Some((r, c)))
-                            .map_or("-", |view| view.name.as_str())
+                            .position(|view| view.at == Some((r, c)))
+                        {
+                            // Name and state together, so a reader never has
+                            // to correlate two separate listings and risk
+                            // pairing a state with the wrong node.
+                            Some(index) => format!(
+                                "{}:{}",
+                                self.views[index].name,
+                                match states[index] {
+                                    State::Ok => "ok",
+                                    State::Alert => "alert",
+                                    State::Unknown => "unknown",
+                                }
+                            ),
+                            None => "-".to_string(),
+                        }
                     })
                     .collect();
                 cells.join(" ")
@@ -390,7 +480,7 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
         let table = value
             .as_table()
             .ok_or_else(|| "grid must be a table".to_string())?;
-        known_keys(table, &["rows", "columns"], "grid")?;
+        known_keys(table, &["rows", "columns", "state"], "grid")?;
         let axis = |key: &str| -> Result<Vec<String>, String> {
             table
                 .get(key)
@@ -405,6 +495,12 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
         grid.columns = axis("columns")?;
         if grid.rows.is_empty() || grid.columns.is_empty() {
             return Err("grid.rows and grid.columns must each name an axis".into());
+        }
+        if let Some(value) = table.get("state") {
+            let text = as_str(value, "grid.state")?;
+            // The file is read at prompt time, not now: it may not exist yet
+            // when the shell starts, and a collector may create it later.
+            grid.state = Some(PathBuf::from(text));
         }
     }
 

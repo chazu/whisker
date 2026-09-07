@@ -29,9 +29,15 @@ segments = ["directory", "kubernetes"]
 # [grid]
 # rows = ["code", "infra"]
 # columns = ["dev", "ops"]
+# state = "/run/user/1000/whisker-nodes"   # where node status is read from
 #
 # [view.ops]
 # at = ["infra", "ops"]     # this view's place on the grid
+#
+# The state file is one line per view, "NAME STATUS [anything else]", with
+# STATUS being ok, alert, or unknown. Something else writes it on its own
+# schedule, because collecting each node's status inline would slow every
+# prompt. Anything unreadable or malformed leaves that node unknown.
 #
 # Segments only need a [segment.name] entry to customise them, or to define a
 # new one. Built-in sources: directory, git, kubernetes.

@@ -212,6 +212,45 @@ The grid is optional and additive. Without it, or for a view with no `at`,
 `view move` returns the current view unchanged, so an existing configuration
 behaves exactly as before.
 
+### Node state
+
+A grid can also show what each node is reporting. Collecting that inline would
+not scale, since one Kubernetes check takes around 29 ms and a nine-node grid
+would add a quarter of a second to every prompt before touching a network. So
+collection is decoupled from display: something else writes a small state file
+on its own schedule, and Whisker only reads it.
+
+```toml
+[grid]
+rows = ["code", "infra"]
+columns = ["ops", "prod"]
+state = "/run/user/1000/whisker-nodes"
+```
+
+The file is one line per view, `NAME STATUS [anything else]`, where status is
+`ok`, `alert`, or `unknown`:
+
+```text
+infra_prod alert 2026-09-06T22:10:05 3 warning events
+infra_ops  ok
+```
+
+Trailing words are ignored, so a collector can record a timestamp and a reason
+in the same line for a human to read. `view grid` then reports each cell as
+`name:status`, with `-` for a cell no view claims.
+
+Anything on the machine can write this file, and a collector may be halfway
+through rewriting it when the prompt reads, so nothing about reading it can
+fail. A missing file, a malformed line, an unknown view, or an unrecognised
+status word all leave that node `unknown` rather than raising an error: a
+prompt that refuses to draw is worse than one that admits it does not know.
+Only the status word is used, and it is matched against a fixed set, so hostile
+content cannot reach the row.
+
+Note the freshness limit this implies. Bash defers signal handlers while
+Readline waits for a keystroke, so nothing can repaint the prompt on its own.
+The grid is as fresh as your last keystroke, not as fresh as the world.
+
 Known limits. Collectors are synchronous and local, so a slow Git repository or
 custom command delays a redraw; there are no timeouts. Styling is static: it
 cannot yet depend on state, so "red when the branch is dirty" cannot be

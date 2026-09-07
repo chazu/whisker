@@ -1021,15 +1021,128 @@ at = ["data", "staging"]
 
     #[test]
     fn the_grid_reports_its_shape_with_holes() {
+        // Name and state travel together so a reader never has to correlate
+        // two listings and risk pairing a state with the wrong node. With no
+        // state file configured every node is honestly unknown.
         let config = grid_config();
         assert_eq!(
             config.grid_rows(),
             vec![
-                "ops staging prod",
-                "infra_ops - infra_prod",
-                "- data_staging -",
+                "ops:unknown staging:unknown prod:unknown",
+                "infra_ops:unknown - infra_prod:unknown",
+                "- data_staging:unknown -",
             ]
         );
+    }
+
+    /// The state file is untrusted and may be half-written when read, so the
+    /// reader must never fail. These cover the ways it can be wrong.
+    fn config_with_state(contents: &str) -> (config::Config, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "whisker-state-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("state");
+        std::fs::write(&path, contents).expect("write state");
+        let config = config::parse(
+            &format!(
+                r#"
+views = ["a", "b"]
+[grid]
+rows = ["one"]
+columns = ["left", "right"]
+state = "{}"
+[view.a]
+segments = ["directory"]
+at = ["one", "left"]
+[view.b]
+segments = ["directory"]
+at = ["one", "right"]
+"#,
+                path.display()
+            ),
+            None,
+        )
+        .expect("parses");
+        (config, dir)
+    }
+
+    #[test]
+    fn node_state_is_read_from_the_state_file() {
+        let (config, dir) = config_with_state("a ok\nb alert 2026-09-06T22:10:05 3 events\n");
+        assert_eq!(
+            config.states(),
+            vec![config::State::Ok, config::State::Alert]
+        );
+        // Trailing words are the collector's business, not ours.
+        assert_eq!(
+            config.grid_rows(),
+            vec!["a:ok b:alert"]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_malformed_state_file_leaves_nodes_unknown_rather_than_failing() {
+        // Every line here is wrong in a different way. A prompt that refuses
+        // to draw is worse than one that admits it does not know.
+        let (config, dir) = config_with_state(
+            "\n\
+             b\n\
+             a wat\n\
+             nosuchview alert\n\
+             \n\
+             garbage garbage garbage\n",
+        );
+        assert_eq!(
+            config.states(),
+            vec![config::State::Unknown, config::State::Unknown]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_missing_state_file_is_not_an_error() {
+        let config = config::parse(
+            r#"
+views = ["a"]
+[grid]
+rows = ["one"]
+columns = ["left"]
+state = "/nonexistent/whisker/state/file"
+[view.a]
+segments = ["directory"]
+at = ["one", "left"]
+"#,
+            None,
+        )
+        .expect("parses");
+        assert_eq!(config.states(), vec![config::State::Unknown]);
+    }
+
+    #[test]
+    fn a_hostile_state_file_cannot_reach_the_row() {
+        // Anything on the machine can write this file, so its contents must
+        // not be able to move the cursor or add a line. Only the status word
+        // is ever used, and it is matched against a fixed set.
+        let (config, dir) = config_with_state(
+            "a \u{1b}[2J\u{1b}[H\nb alert\u{1b}[31m\n",
+        );
+        // The escape is not a status word, so that node stays unknown. The
+        // second line's status is "alert\u{1b}[31m", also not a status word.
+        assert_eq!(
+            config.states(),
+            vec![config::State::Unknown, config::State::Unknown]
+        );
+        for row in config.grid_rows() {
+            assert!(!row.contains('\u{1b}'), "escape reached the row: {row:?}");
+        }
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

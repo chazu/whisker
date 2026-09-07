@@ -1,12 +1,13 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal, with two pieces built. `atomic` and `fallback` on
+**Status:** proposal, with three pieces built. `atomic` and `fallback` on
 segments have landed, closing the correctness gap that made a truncated grid
-dangerous, and so have grid coordinates and 2D movement (`[grid]`, `at`,
-`view move`, `view grid`). The picture itself has not: design D exists as two
-working prototypes, `docs/probes/pixelgrid.py` for rendering and
+dangerous; so have grid coordinates and 2D movement (`[grid]`, `at`,
+`view move`, `view grid`); and so has reading per-node state from a file
+(`grid.state`). The picture itself has not: design D exists as two working
+prototypes, `docs/probes/pixelgrid.py` for rendering and
 `docs/probes/pixelgrid.rs` for the Rust implementation and its cost. Nothing
-yet updates the state the grid would show.
+yet *writes* the state file, so a user must supply their own collector.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
@@ -424,8 +425,11 @@ state file is already neutralised.
   the axes, a view's `at = [row, column]` places it, and `view move` walks it.
   Movement does not wrap and skips undefined cells; `view grid` reports the
   shape for a shell to render.
-- A place to store per-node alert state and the last-seen value that `changed`
-  would compare against.
+- ~~A place to store per-node alert state and the last-seen value that
+  `changed` would compare against.~~ **Partly built.** `grid.state` names a
+  file that anything may write, read at prompt time and neutralised against
+  hostile content. What remains is somewhere to keep the *previous* value that
+  a `changed` rule would compare against.
 - For design D: emitting a graphics placement from inside the renderer rather
   than through a segment, plus startup detection of protocol support and cell
   size. `pixelgrid.rs` is a complete implementation of the drawing and encoding
@@ -538,16 +542,19 @@ Two implementation notes that the measurement forced:
 
 ## Nothing updates yet
 
-Everything above renders state. Nothing *produces* it, and until something
-does, the grid is a decoration that always shows the same picture. This is the
-gap between the prototype and a feature, and it is the largest remaining piece
-of work.
+*Partly resolved.* The reading half is built: `grid.state` names a file, one
+line per view, that anything may write, and `view grid` reports what it says.
+So the grid now shows real state rather than a fixed picture, provided
+something writes that file.
 
-What is missing, in order:
+What is still missing is a **collector**: a process that runs each node's check
+on its own schedule and writes the file. Until one exists the state is whatever
+the user's own script puts there, which is a usable answer for anyone willing
+to write ten lines of shell, and no answer at all for anyone else.
 
-1. **A source of node state.** The state file described under
-   [Alerts](#alerts) is the mechanism: one line per node, written by anything,
-   read through an ordinary segment so `clean` still guards it.
+The original list, with what remains:
+
+1. ~~**A source of node state.**~~ Built, as `grid.state`.
 2. **A collector** that polls each node's `alert.command` on its own schedule
    and writes that file. This is the part that cannot be inline, because
    nine Kubernetes checks would add a quarter of a second to every prompt.
@@ -556,9 +563,6 @@ What is missing, in order:
    [async is not available](#async-is-not-available): the grid is as fresh as
    the last keystroke, not as fresh as the world, and the UI should not imply
    otherwise.
-
-Until at least steps 1 and 2 exist, the honest description of this feature is
-"a navigable map", not "an alerting dashboard".
 
 ## What could go wrong
 
@@ -598,9 +602,10 @@ Until at least steps 1 and 2 exist, the honest description of this feature is
 3. **Navigation.** *Built.* Grid coordinates and `view move` exist, so the
    model is navigable from the command line. What remains is binding keys to
    it, with the existing input-preservation checks extended to cover them.
-4. **Alert state file.** Reading and display only, with a documented format, so
-   anything can write it. Until this exists the grid shows a fixed picture; see
-   [Nothing updates yet](#nothing-updates-yet).
+4. **Alert state file.** *Built.* Reading and display only, with a documented
+   format, so anything can write it. `grid.state` names the file, `view grid`
+   reports each cell as `name:status`, and every way the file can be wrong
+   leaves that node `unknown` rather than failing.
 5. **A collector** that populates the file on a schedule.
 6. **Overlay (C)** for the full map.
 
