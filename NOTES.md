@@ -80,3 +80,8 @@ and `bash -n` pass. In a real pseudo-terminal, `./try-it` cycled the default
 views and a custom two-view config with a custom `hostname` segment while
 preserving partly typed input, and a deliberately broken config produced one
 error and a working plain shell.
+
+A first real configuration exposed one flaw: a segment's prefix was baked into
+the collected text, so shortening ate the decoration and `📁 ~/long/path` became
+`…/path` with the icon gone. Prefixes and suffixes now apply during layout,
+leaving shortening to consume only the body. A test pins this.

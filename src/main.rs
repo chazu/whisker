@@ -108,18 +108,15 @@ fn custom(argv: &[String]) -> String {
         .unwrap_or_default()
 }
 
+/// The segment's body only. The prefix and suffix are applied during layout so
+/// that shortening eats into the body and never into the decoration.
 fn collect(segment: &Segment) -> String {
-    let body = match &segment.source {
+    match &segment.source {
         Source::Directory => directory(),
         Source::Git => git().unwrap_or_default(),
         Source::Kubernetes => kubernetes(),
         Source::Command(argv) => custom(argv),
-    };
-    // An empty segment disappears entirely, prefix and suffix included.
-    if body.is_empty() {
-        return String::new();
     }
-    format!("{}{body}{}", segment.prefix, segment.suffix)
 }
 
 // Plain text only. Prevent metadata from inserting terminal controls or rows.
@@ -171,11 +168,17 @@ fn layout(view: &ViewDef, parts: &[String], columns: usize) -> String {
     let separator = clean(&view.separator);
     let mut parts: Vec<String> = parts.iter().map(|part| clean(part)).collect();
 
+    // An empty body drops the segment entirely, decoration and separator too.
+    let decorate = |index: usize, body: &str| {
+        let segment = &view.segments[index];
+        format!("{}{body}{}", clean(&segment.prefix), clean(&segment.suffix))
+    };
     let joined = |parts: &[String]| {
-        let visible: Vec<&str> = parts
+        let visible: Vec<String> = parts
             .iter()
-            .filter(|part| !part.is_empty())
-            .map(String::as_str)
+            .enumerate()
+            .filter(|(_, body)| !body.is_empty())
+            .map(|(index, body)| decorate(index, body))
             .collect();
         format!("{label}{}", visible.join(&separator))
     };
@@ -382,6 +385,30 @@ mod tests {
         assert!(width(&row) <= 29, "row {row:?} exceeds the budget");
         assert!(row.ends_with("git:main*"), "detail lost in {row:?}");
         assert!(row.starts_with("[dev] …"), "wrong end kept in {row:?}");
+    }
+
+    #[test]
+    fn shortening_eats_the_body_and_keeps_the_decoration() {
+        let config = config::parse(
+            r#"
+views = ["a"]
+[view.a]
+segments = ["directory"]
+[segment.directory]
+prefix = "> "
+suffix = " <"
+"#,
+            None,
+        )
+        .unwrap();
+        let row = layout(
+            &view(&config, "a"),
+            &["~/a/very/long/path/to/somewhere/deep".into()],
+            20,
+        );
+        assert!(width(&row) <= 19, "row {row:?} exceeds the budget");
+        assert!(row.starts_with("> …"), "prefix lost in {row:?}");
+        assert!(row.ends_with(" <"), "suffix lost in {row:?}");
     }
 
     #[test]
