@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render a grid of views as a tiny inline image (design D').
+"""Render a grid of views as a tiny inline image (design D).
 
 One node per dot, one pixel of gap between dots, colour carrying state. The
 image is placed in an exact number of terminal cells so the prompt's width is
@@ -175,7 +175,7 @@ def main():
               f"TERM_PROGRAM={os.environ.get('TERM_PROGRAM')}")
         if cell is None:
             print("Without a cell size the image cannot be sized to whole cells,")
-            print("so the prompt cannot know its own width. Design D' needs a")
+            print("so the prompt cannot know its own width. Design D needs a")
             print("text fallback for this case.")
             return 1
         if args.probe:
@@ -186,20 +186,32 @@ def main():
         ["idle", "current", "alert"],
         ["idle", "ok", "idle"],
     ]
-    data, cells, art, img = build(grid, args.scale, cell, args.cells, args.gap)
-    if data is None:
-        print(f"does not fit: art {art} into {img}; try a smaller --scale")
-        return 1
+    print(f"cell={cell[0]}x{cell[1]}px  "
+          f"TERM_PROGRAM={os.environ.get('TERM_PROGRAM')}\n")
+    print("Does this read at a glance, or is it a smudge? That is the question")
+    print("the automated probes cannot answer.\n")
 
-    sys.stdout.write("before[")
-    sys.stdout.flush()
-    sys.stdout.buffer.write(emit(data, cells))
-    sys.stdout.buffer.flush()
-    sys.stdout.write(" " * cells)
-    print(f"]after   art={art[0]}x{art[1]}px image={img[0]}x{img[1]}px "
-          f"cells={cells} cell={cell[0]}x{cell[1]}")
-    print("The brackets should sit tight against the image with no gap or")
-    print("overlap. If they do, the cell accounting is exact.")
+    # Show a range of dot sizes, because the right one depends on the display
+    # and the font, and a single sample would beg the question.
+    scales = (args.scale,) if args.cells else (2, 3, 4)
+    for scale in scales:
+        data, cells, art, img = build(grid, scale, cell, args.cells, args.gap)
+        if data is None:
+            print(f"  dot={scale}px: does not fit "
+                  f"({art[0]}x{art[1]} into {img[0]}x{img[1]})")
+            continue
+        sys.stdout.write(f"  dot={scale}px gap={args.gap}px   ~/dev[")
+        sys.stdout.flush()
+        sys.stdout.buffer.write(emit(data, cells))
+        sys.stdout.buffer.flush()
+        sys.stdout.write(" " * cells)
+        print(f"]$ echo hi    ({art[0]}x{art[1]}px in {cells} cell(s), "
+              f"{len(data)} bytes)")
+
+    print("\nThe bracket must sit tight against the image, with no gap and no")
+    print("overlap: that is the cell accounting being exact. If you instead see")
+    print("raw escape text, this terminal lacks the protocol and design D must")
+    print("fall back to the text strip.")
     return 0
 
 

@@ -1,6 +1,7 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal. Nothing here is built.
+**Status:** proposal. Nothing here is built. Design D is a working prototype in
+`docs/probes/pixelgrid.py`, but nothing has landed in Whisker itself.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
@@ -345,6 +346,11 @@ state file is already neutralised.
   coordinates in the config for it to move through.
 - A place to store per-node alert state and the last-seen value that `changed`
   would compare against.
+- For design D: emitting a graphics placement from inside the renderer rather
+  than through a segment, plus startup detection of protocol support and cell
+  size. `pixelgrid.py` shows the whole of it in about 150 lines, so the port is
+  small, but it is genuinely new ground for this codebase, which has never
+  written a byte the layout engine did not measure.
 
 The order matters: `atomic` is worth adding on its own merits, independent of
 whether the grid is ever built.
@@ -364,10 +370,16 @@ segments = ["directory", "kubernetes"]
 alert = { command = ["check-staging"], when = "exit" }
 
 [grid.display]
-mode = "strip"          # strip | block | overlay
+mode = "pixels"         # pixels | strip | block | overlay
+fallback = "strip"      # when the terminal cannot draw pixels
+dot = 3                 # pixels per node
+gap = 1                 # pixels between nodes
 position_style = { fg = "green", bold = true }
 alert_style = { fg = "red", bold = true }
 ```
+
+The styles serve both paths: design D reads them as dot colours, design A as
+SGR attributes, which is what keeps the two displays from disagreeing.
 
 Sparse grids need a decision: if `[node.data.prod]` is undefined, is it an empty
 cell you can move onto, or is it skipped? Skipping is friendlier; showing a hole
@@ -420,7 +432,15 @@ if nothing ever alerts.
 - What is the second axis in practice? Environment × concern is a guess.
 - Should the grid be shared between shells, or is each shell's position its own?
   Shared position is surprising; shared *alerts* are clearly right.
-- Does an alert need a severity, or is one level enough?
+- Does an alert need a severity, or is one level enough? Design D makes this
+  cheap, since severity is just another dot colour, which is an argument for
+  more than one level rather than against.
+- Does the pixel grid actually read well at a glance, or does a 3x3 field of
+  dots inside one cell just look like a smudge? This is the one question the
+  probes cannot answer, and it decides the whole design. Run
+  `python3 docs/probes/pixelgrid.py` and look at it.
+- Does the placement survive Ctrl-L, a resize, and scrollback the way the text
+  row does? Those invariants were established for text, not for an image.
 
 ## Appendix: what was measured
 
