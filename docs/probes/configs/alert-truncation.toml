@@ -1,0 +1,7 @@
+views = ["g"]
+[view.g]
+label = "[env] "
+segments = ["directory", "strip"]
+[segment.strip]
+command = ["printf", "%s", "○○○ │ ○●○ │ ○○!"]
+shrink = false

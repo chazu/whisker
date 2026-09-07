@@ -92,12 +92,41 @@ Keep the current single information row and add a compact grid to it.
 
 Each character is a node, `│` separates grid rows, `●` is you, `!` is an alert.
 Measured, that 3x3 strip is 15 columns and the whole example row is 58, so it
-fits beside existing content at 80. It degrades by dropping to an 18-column
-summary when narrow:
+fits beside existing content at 80.
+
+This design was prototyped through Whisker's real configuration, with the strip
+as an ordinary `command` segment, and it renders correctly on one row at every
+width from 100 down to 12. But that prototype exposed a flaw that has to be
+fixed before design A is safe.
+
+**A truncated grid lies.** Whisker shortens the longest shrinkable segment and,
+when nothing more can give, clips the whole row. Marking the strip
+`shrink = false` does not exempt it from that final clip. Measured with the
+alert in the last cell:
 
 ```
-⟨infra,staging⟩ 2!
+28 cols: [env] …ker  ○○○ │ ○●○ │ ○○!
+24 cols: [env] …  ○○○ │ ○●○ │ ○…      <- alert gone, still looks like a grid
 ```
+
+At 24 columns the row still resembles a healthy grid while the alert has
+silently vanished. A status display that hides an alert is worse than one that
+is absent, because the user reads calm and believes it.
+
+Design A therefore needs one new capability that does not exist today: a
+segment that is rendered **whole or not at all**, with an alternative for when
+it does not fit. Something like
+
+```toml
+[segment.grid]
+command = ["whisker-grid", "--strip"]
+atomic = true                      # never clip; drop or swap instead
+fallback = ["whisker-grid", "--summary"]   # e.g. "⟨infra,staging⟩ 2!"
+```
+
+so a narrow terminal shows an honest 18-column summary rather than a
+convincing, wrong picture. `atomic` is useful well beyond the grid: any segment
+whose meaning depends on being complete wants it.
 
 - **Cost:** zero extra rows.
 - **Risk:** low. It is the existing mechanism with a longer string, so
@@ -191,9 +220,13 @@ infra staging ok   2026-09-06T22:10:03
 infra prod    alert 2026-09-06T22:10:05 3 warning events
 ```
 
-Whisker should treat this file as untrusted input and clean it exactly as it
-cleans segment output today, since anything that writes it can otherwise inject
-terminal control sequences into a prompt.
+This file is untrusted input, since anything on the machine can write it.
+Verified that the existing protection already covers it: a state file
+containing `ESC[2J ESC[H PWNED ESC[31m` and a second line, read through an
+ordinary segment, rendered as one row with the escapes stripped to spaces and
+the extra line discarded. The existing `clean` and first-line rules are exactly
+the right defence, so this needs no new machinery, only the discipline of
+reading the file through a normal segment rather than around it.
 
 ### Clearing one
 
@@ -213,6 +246,33 @@ A safer default is a small set of unmodified letter keys behind a prefix, in the
 spirit of tmux: a leader key, then `h`/`j`/`k`/`l` or the arrows. That costs one
 extra keystroke and buys predictability. It also gives somewhere obvious to hang
 "show the full map" (C) and "dismiss alerts".
+
+## What the current code already gives, and what it lacks
+
+Design A was prototyped through Whisker's real configuration and binary rather
+than sketched, which is how the truncation flaw above was found. What that
+prototype showed:
+
+**Already works, no new code.** A grid strip as an ordinary `command` segment
+renders on one row at every width from 100 to 12, with styling, and stays
+colour-safe. An alert count read from a state file renders and correctly
+disappears, separator included, when the count is zero. Hostile content in that
+state file is already neutralised.
+
+**Missing, and needed.**
+
+- `atomic` and `fallback` on a segment, so a grid is never shown truncated.
+  This is the correctness gap; nothing else on this list can cause a wrong
+  reading.
+- 2D movement. `view next --current NAME` walks a single ring, verified: four
+  views cycle `a1 → a2 → b1 → b2 → a1`. A grid needs something like
+  `view move --direction left|right|up|down --current NAME`, plus grid
+  coordinates in the config for it to move through.
+- A place to store per-node alert state and the last-seen value that `changed`
+  would compare against.
+
+The order matters: `atomic` is worth adding on its own merits, independent of
+whether the grid is ever built.
 
 ## Configuration sketch
 
@@ -253,8 +313,13 @@ is more honest about the shape.
 
 ## Suggested order
 
+0. **`atomic` and `fallback` on segments.** Without this a narrow terminal
+   shows a truncated grid that hides alerts, which is the one failure mode that
+   makes the feature actively harmful. Worth doing regardless of the grid.
 1. **Strip rendering only.** Static grid from config, position marker, no
-   alerts. Proves the layout inside the existing one-row mechanism.
+   alerts. Proves the layout inside the existing one-row mechanism. Already
+   prototyped through the real configuration, so this is mostly a matter of
+   generating the strip rather than hand-writing it.
 2. **Navigation.** Leader key plus directional keys, with the existing
    input-preservation checks extended to cover it.
 3. **Alert state file.** Reading and display only, with a documented format, so
@@ -290,6 +355,11 @@ emulator. Each probe drove an actual interactive shell.
 | Cost of one collector | 2 ms directory, 5 ms Git, 29 ms Kubernetes (median of 5) |
 | Alternate-screen overlay (design C) | **Not established**; the emulator lacks `1049` |
 | Width of the design A strip | 15 columns for 3x3; 58 for the whole example row |
+| Design A through the real binary | One row at every width 100..12; colour-safe |
+| **Truncated grid hides an alert** | **At 24 columns the alert vanishes while the row still looks like a grid** |
+| Alert count from a state file | Works; segment and separator vanish at zero |
+| Hostile state file (`ESC[2J`, extra line) | Already neutralised by the existing `clean` and first-line rules |
+| `view next` as 2D movement | Single ring only; 2D needs a new subcommand |
 
 The async result is the one that matters, because it converts "live dashboard"
 into "map that updates when you touch it". Better to know that before building

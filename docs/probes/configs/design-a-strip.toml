@@ -1,0 +1,9 @@
+views = ["grid"]
+[view.grid]
+label = "[infra·staging] "
+label_style = { fg = "cyan", bold = true }
+segments = ["directory", "git", "strip"]
+[segment.strip]
+command = ["printf", "%s", "○○○ │ ○●! │ ○○○"]
+style = { fg = "yellow" }
+shrink = false

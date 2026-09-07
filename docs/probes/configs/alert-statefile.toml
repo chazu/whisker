@@ -1,0 +1,8 @@
+views = ["g"]
+[view.g]
+label = "[grid] "
+segments = ["directory", "alerts"]
+[segment.alerts]
+command = ["sh", "-c", "awk '$3==\"alert\"{n++} END{if(n)printf \"%d!\", n}' /tmp/gridstate"]
+style = { fg = "red", bold = true }
+prefix = "⚑"
