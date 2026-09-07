@@ -261,13 +261,15 @@ fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<St
     Ok(layout(view, &parts, columns, color))
 }
 
-const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
+const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless a non-empty NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
 
 /// Whisker's output is captured into a shell variable and printed later, so a
 /// TTY check here would always say "not a terminal". Auto therefore honours the
 /// usual opt-outs and otherwise assumes the row reaches a terminal.
 fn color_auto() -> bool {
-    if env::var_os("NO_COLOR").is_some() {
+    // The NO_COLOR standard counts the variable only when it is present and
+    // not empty, regardless of its value. An empty NO_COLOR= is not an opt-out.
+    if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
         return false;
     }
     !matches!(env::var("TERM").as_deref(), Ok("dumb") | Ok(""))
@@ -665,6 +667,49 @@ prefix = "@"
             false,
         );
         assert!(!off.contains('\u{1b}'), "colour emitted when off: {off:?}");
+    }
+
+    /// The NO_COLOR standard counts the variable only when present and not
+    /// empty. These mutate the process environment, so they run in one test.
+    #[test]
+    fn color_auto_follows_the_no_color_standard() {
+        let restore = (env::var_os("NO_COLOR"), env::var_os("TERM"));
+        unsafe {
+            env::set_var("TERM", "xterm-256color");
+
+            env::remove_var("NO_COLOR");
+            assert!(color_auto(), "colour should be on with no opt-out");
+
+            env::set_var("NO_COLOR", "1");
+            assert!(!color_auto(), "NO_COLOR=1 must disable colour");
+
+            // Any non-empty value counts, regardless of what it says.
+            env::set_var("NO_COLOR", "0");
+            assert!(!color_auto(), "NO_COLOR=0 must still disable colour");
+            env::set_var("NO_COLOR", "false");
+            assert!(!color_auto(), "NO_COLOR=false must still disable colour");
+
+            // An empty value is not an opt-out.
+            env::set_var("NO_COLOR", "");
+            assert!(color_auto(), "empty NO_COLOR= must not disable colour");
+
+            env::remove_var("NO_COLOR");
+            env::set_var("TERM", "dumb");
+            assert!(!color_auto(), "TERM=dumb must disable colour");
+            env::set_var("TERM", "");
+            assert!(!color_auto(), "an empty TERM must disable colour");
+            env::remove_var("TERM");
+            assert!(color_auto(), "an unset TERM should still allow colour");
+
+            match restore.0 {
+                Some(value) => env::set_var("NO_COLOR", value),
+                None => env::remove_var("NO_COLOR"),
+            }
+            match restore.1 {
+                Some(value) => env::set_var("TERM", value),
+                None => env::remove_var("TERM"),
+            }
+        }
     }
 
     #[test]

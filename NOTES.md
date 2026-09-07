@@ -131,3 +131,15 @@ say so. And the checks earn their keep: reordering the code to style before
 measuring, so escapes are counted as columns, makes both `checks/screen.py` and
 the `style_never_changes_the_laid_out_text` test fail, which was confirmed by
 deliberately introducing that regression and then reverting it.
+
+Re-checking the styling work against its own claims found one real defect. The
+NO_COLOR standard counts the variable only when present and *not empty*,
+whatever its value; the first implementation disabled colour for an empty
+`NO_COLOR=` as well. Fixed, with a test covering unset, `1`, `0`, `false`, and
+empty, alongside `TERM=dumb`, an empty `TERM`, and an unset one.
+
+The same pass confirmed all 22 documented colour forms by reading back the
+colour a terminal actually applied to each cell, rather than by matching the
+escape bytes, and confirmed that wide CJK, multi-codepoint emoji, and combining
+accents shrink to a single row at widths from 80 down to 2 with colour on and
+off alike.

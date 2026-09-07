@@ -100,7 +100,8 @@ overrides the view's for the fields it sets; the rest are inherited.
 `--color` takes `auto` (default), `always`, or `never`. Whisker's output is
 captured into a shell variable rather than written to a terminal, so `auto`
 cannot detect a TTY: it honours `NO_COLOR` and `TERM=dumb` and otherwise assumes
-colour is wanted. Every styled piece resets afterwards, so nothing leaks into
+colour is wanted. Following the NO_COLOR standard, the variable counts only when
+it is present and not empty, whatever its value. Every styled piece resets afterwards, so nothing leaks into
 the command you type.
 
 A configuration mistake is reported rather than ignored: an unknown key, a view
