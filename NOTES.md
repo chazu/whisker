@@ -41,8 +41,10 @@ and a terminal screen emulator:
 
 The installed kubeconfig was also read successfully through the Rust renderer.
 One local timing sample was about 7 ms for minimal, 17 ms for dev outside a Git
-repository, and 199 ms for ops. These are observations, not performance bounds;
-collectors are synchronous and have no timeout in this proof of concept.
+repository, and 199 ms for ops. (Re-measured on 2026-09-06 with a warm cache:
+2 ms, 5 ms, and 29 ms. Both are single observations on one machine.) These are
+observations, not performance bounds; collectors are synchronous and have no
+timeout in this proof of concept.
 
 The user tried the prototype on 2026-09-05 and reported "its awesome", accepting
 the initial interaction. This does not establish complete coverage of completion,

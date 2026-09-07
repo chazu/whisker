@@ -91,8 +91,9 @@ Keep the current single information row and add a compact grid to it.
 ```
 
 Each character is a node, `│` separates grid rows, `●` is you, `!` is an alert.
-A 3x3 grid costs 11 columns. It fits beside existing content at 80 columns and
-degrades by dropping to a summary when narrow:
+Measured, that 3x3 strip is 15 columns and the whole example row is 58, so it
+fits beside existing content at 80. It degrades by dropping to an 18-column
+summary when narrow:
 
 ```
 ⟨infra,staging⟩ 2!
@@ -109,8 +110,9 @@ degrades by dropping to a summary when narrow:
 Render the grid as its own block above the information row, shown in the sketch
 at the top.
 
-- **Cost:** measured at 3 rows for a 3-row grid, plus borders if drawn. On a
-  24-row terminal a bordered 3x3 map costs about 12% of the screen, permanently.
+- **Cost:** 3 rows for a 3-row grid, which is 12% of a 24-row terminal and 8%
+  of a 40-row one. Drawn with the borders shown in the sketch above it is 7
+  rows, or 29% of a 24-row terminal, permanently. Borders are expensive.
 - **Risk:** medium. Multi-row repaint is verified, but every existing invariant
   (Ctrl-L, resize, the first-Alt-O-after-resize repaint) must be re-established
   for N rows rather than one.
@@ -121,12 +123,20 @@ at the top.
 ### C. Alternate screen overlay
 
 On a navigation key, switch to the alternate screen buffer (`ESC[?1049h`), draw
-a full map, take a keystroke, restore. The terminal restores the previous screen
-byte for byte, so the prompt cannot be corrupted.
+a full map, take a keystroke, restore. A terminal that implements the mode
+restores the previous screen itself, so the prompt cannot be corrupted.
+
+Unverified, unlike the rest of this document. The screen emulator used for the
+other probes does not implement `1049`, so the probe showed the map leaking onto
+the main screen rather than being restored. That is the emulator's gap, not a
+result about real terminals, but it means this option needs checking in an
+actual terminal before being chosen. It also hints at the real risk: any
+terminal or multiplexer that does not support the mode degrades badly.
 
 - **Cost:** zero rows in steady state.
 - **Risk:** the interaction is modal, which is a different feel from a prompt,
-  and it competes with the pager the user may already be in.
+  and it competes with the pager the user may already be in. Behaviour on
+  terminals lacking `1049` is unknown and must be checked.
 - **Best for:** a "show me everything" key rather than routine movement.
 
 **Recommendation:** build A, then add C as an on-demand overlay. Treat B's
@@ -156,8 +166,11 @@ previous value.
 ### When it is collected
 
 This is where the async constraint bites. Collecting every node's alert on every
-prompt is unacceptable: the existing `ops` view alone took about 199 ms, and a
-3x3 grid of such nodes would add seconds to every prompt.
+prompt does not scale. Measured on this machine, one `kubernetes` segment takes
+a median of 29 ms against a local kubeconfig, against 2 ms for a directory and
+5 ms for Git. Nine such nodes is roughly a quarter of a second added to every
+prompt, before anything touches a network; a node whose check is a real remote
+call would be far worse, and the collectors have no timeout.
 
 The only workable shape is to decouple collection from display:
 
@@ -273,7 +286,10 @@ emulator. Each probe drove an actual interactive shell.
 | `SIGUSR1` trap while Readline waits | **Does not run**; deferred indefinitely |
 | Keystroke, `SIGCONT`, `SIGWINCH` as a flush | Did not reliably deliver the trap |
 | Background state file + `bind -x` refresh | Works; picked up mid-typing without disturbing input |
-| Vertical cost of a 3-row map | 12% of a 24-row terminal, 8% of a 40-row one |
+| Vertical cost of a 3x3 map | 3 rows plain = 12% of 24 rows; 7 rows bordered = 29% |
+| Cost of one collector | 2 ms directory, 5 ms Git, 29 ms Kubernetes (median of 5) |
+| Alternate-screen overlay (design C) | **Not established**; the emulator lacks `1049` |
+| Width of the design A strip | 15 columns for 3x3; 58 for the whole example row |
 
 The async result is the one that matters, because it converts "live dashboard"
 into "map that updates when you touch it". Better to know that before building
