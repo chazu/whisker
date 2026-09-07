@@ -1,9 +1,11 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal. Nothing has landed in Whisker itself. Design D exists as
-two working prototypes: `docs/probes/pixelgrid.py` for rendering and
-`docs/probes/pixelgrid.rs` for the Rust implementation and its cost. Neither
-is wired into the renderer, and nothing yet updates the state the grid shows.
+**Status:** proposal, with one piece built. `atomic` and `fallback` on segments
+have landed in the renderer, which closes the correctness gap that made a
+truncated grid dangerous. The grid itself has not: design D exists as two
+working prototypes, `docs/probes/pixelgrid.py` for rendering and
+`docs/probes/pixelgrid.rs` for the Rust implementation and its cost. Nothing
+yet updates the state the grid would show.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
@@ -318,7 +320,7 @@ of the space.
 
 The `atomic` and `fallback` work from step 0 is *more* necessary now, not less:
 "draw the picture, or cleanly swap to the strip, but never show half of
-either" is precisely what `atomic` expresses.
+either" is precisely what `atomic` expresses. That part is now built.
 
 ## Alerts
 
@@ -409,9 +411,11 @@ state file is already neutralised.
 
 **Missing, and needed.**
 
-- `atomic` and `fallback` on a segment, so a grid is never shown truncated.
-  This is the correctness gap; nothing else on this list can cause a wrong
-  reading.
+- ~~`atomic` and `fallback` on a segment, so a grid is never shown truncated.~~
+  **Built.** This was the correctness gap; nothing else on this list can cause
+  a wrong reading. Measured against the real binary: at 24 columns, where the
+  strip previously dropped its alert while still looking like a healthy grid,
+  the segment now swaps to its fallback summary.
 - 2D movement. `view next --current NAME` walks a single ring, verified: four
   views cycle `a1 → a2 → b1 → b2 → a1`. A grid needs something like
   `view move --direction left|right|up|down --current NAME`, plus grid
@@ -569,9 +573,12 @@ Until at least steps 1 and 2 exist, the honest description of this feature is
 
 ## Suggested order
 
-0. **`atomic` and `fallback` on segments.** Without this a narrow terminal
-   shows a truncated grid that hides alerts, which is the one failure mode that
-   makes the feature actively harmful. Worth doing regardless of the grid.
+0. **`atomic` and `fallback` on segments.** *Built.* Without this a narrow
+   terminal shows a truncated grid that hides alerts, which is the one failure
+   mode that makes the feature actively harmful. It was worth doing regardless
+   of the grid, and is now in the renderer: an `atomic` segment is shown whole
+   or replaced by its `fallback`, and layout gives up whole atomic segments,
+   widest first, before it clips the row.
 1. **Strip rendering only.** Static grid from config, position marker, no
    alerts. Proves the layout inside the existing one-row mechanism, and it is
    the fallback every terminal gets, so it is worth building first even though

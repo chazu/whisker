@@ -74,6 +74,29 @@ shortened to fit the width), and `keep_end` (shorten as `…/tail` rather than
 `head…`). The directory shrinks from its start by default; custom segments
 shrink from their end.
 
+### Segments that must not be truncated
+
+Shortening is safe for a path, where `…/tail` still reads truthfully. It is not
+safe for a value whose meaning depends on being complete: a status marker
+clipped halfway still looks like a status marker while hiding whatever fell off
+the end, and a display that hides a warning is worse than one that is absent,
+because the user reads calm and believes it.
+
+Such a segment can set `atomic = true`, which means show it whole or not at
+all, and optionally a `fallback` argv to run when it does not fit:
+
+```toml
+[segment.status]
+command = ["my-status", "--full"]
+atomic = true
+fallback = ["my-status", "--brief"]
+```
+
+A narrow terminal then shows the brief form, or nothing when there is no
+fallback, rather than a convincing but incomplete one. `atomic` and `shrink`
+contradict each other and cannot both be set, and a `fallback` without `atomic`
+is rejected rather than silently ignored.
+
 ### Styling
 
 Colour is structured configuration rather than text you embed, and it is applied
@@ -124,7 +147,10 @@ shows `⎈ unavailable`. It does not query the cluster.
 
 Rust reads the configuration, collects each segment of the selected view, and
 emits a plain text information row, shortening the longest shrinkable segment
-first to keep the row within the terminal width. Bash prints that row from its
+first to keep the row within the terminal width. When nothing may shrink any
+further it gives up whole `atomic` segments, widest first, before clipping the
+row, so a segment that would mislead when truncated is never shown truncated.
+Bash prints that row from its
 prompt hook; PS1 itself is the stable input marker. This avoids Readline
 caching an obsolete information row. Bash stores the selected view in memory
 and refreshes before each prompt and on Alt-O. The inputrc macro forwards Alt-O

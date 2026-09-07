@@ -128,6 +128,42 @@ if "\x1bP" in row or "\x1b\\" in row:
 print(f"   DCS introducer gone: {'\x1bP' not in row}; "
       f"terminator gone: {chr(27) + chr(92) not in row}")
 
+print("\n6. `atomic` fixes the truncation flaw section 2 found")
+# Section 2 shows the bug: a clipped strip hides its alert while still looking
+# like a healthy grid. This is the same strip with atomic = true, so the alert
+# can never be silently lost.
+atomic_cfg = os.path.join(CONFIGS, "atomic-strip.toml")
+with open(atomic_cfg, "w") as handle:
+    handle.write(
+        'views = ["g"]\n[view.g]\nlabel = "[env] "\n'
+        'segments = ["directory", "grid"]\n'
+        '[segment.grid]\n'
+        'command = ["printf", "%s", "\u25cb\u25cb\u25cb \u2502 \u25cb\u25cf\u25cb \u2502 \u25cb\u25cb!"]\n'
+        'atomic = true\n'
+        'fallback = ["printf", "%s", "\u27e82!\u27e9"]\n'
+    )
+try:
+    lost = []
+    for columns in (40, 30, 28, 24, 20, 16):
+        row = subprocess.run(
+            [BIN, "render", "--columns", str(columns), "--color", "never"],
+            capture_output=True, text=True, cwd=ROOT,
+            env=dict(os.environ, WHISKER_CONFIG=atomic_cfg),
+        ).stdout.rstrip("\n")
+        full = "\u25cb\u25cb\u25cb \u2502 \u25cb\u25cf\u25cb \u2502 \u25cb\u25cb!" in row
+        summary = "\u27e82!\u27e9" in row
+        # The one forbidden state: something that looks like a grid but is not
+        # the whole grid, which is how an alert goes missing unnoticed.
+        partial = ("\u25cb" in row) and not full
+        if partial:
+            lost.append(columns)
+        print(f"   {columns:>3}: {row}"
+              f"{'   <- whole' if full else '   <- summary' if summary else ''}")
+    if lost:
+        failures.append(f"a partial grid was shown at {lost} columns")
+finally:
+    os.remove(atomic_cfg)
+
 if failures:
     print("\nFAILURES:")
     for failure in failures:

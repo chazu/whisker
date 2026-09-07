@@ -35,6 +35,18 @@ pub struct Segment {
     pub shrink: bool,
     /// Shorten by dropping the beginning (`…/deep/tail`) rather than the end.
     pub keep_end: bool,
+    /// Never show this segment partially: it is drawn whole or dropped.
+    ///
+    /// Shortening is safe for a path, where `…/tail` still reads truthfully,
+    /// but not for a value whose meaning depends on being complete. A grid of
+    /// status markers clipped mid-way still looks like a grid while hiding
+    /// whatever fell off the end, which is worse than showing nothing.
+    pub atomic: bool,
+    /// What to show instead when an `atomic` segment does not fit.
+    ///
+    /// Empty means drop the segment entirely. A shorter summary is usually
+    /// better than silence, so long as it is honest about being a summary.
+    pub fallback: Option<Source>,
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +165,8 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
         // The directory is the one long, safely truncatable segment by default.
         shrink: name == "directory",
         keep_end: name == "directory",
+        atomic: false,
+        fallback: None,
     };
     let Some(table) = table else {
         return builtin(name)
@@ -161,7 +175,10 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
     };
     known_keys(
         table,
-        &["command", "prefix", "suffix", "shrink", "keep_end", "style"],
+        &[
+            "command", "prefix", "suffix", "shrink", "keep_end", "style",
+            "atomic", "fallback",
+        ],
         &what,
     )?;
     if let Some(command) = table.get("command") {
@@ -196,6 +213,35 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
     }
     if let Some(value) = table.get("style") {
         segment.style = Style::parse(value, &format!("{what}.style"))?;
+    }
+    if let Some(value) = table.get("atomic") {
+        segment.atomic = as_bool(value, &format!("{what}.atomic"))?;
+    }
+    if let Some(value) = table.get("fallback") {
+        let argv = value
+            .as_array()
+            .ok_or_else(|| format!("{what}.fallback must be an array of strings"))?
+            .iter()
+            .map(|item| as_str(item, &format!("{what}.fallback entry")))
+            .collect::<Result<Vec<_>, _>>()?;
+        if argv.is_empty() {
+            return Err(format!("{what}.fallback must name a program"));
+        }
+        segment.fallback = Some(Source::Command(argv));
+    }
+    // A fallback only ever applies when the segment refuses to be clipped, so
+    // configuring one without `atomic` is a mistake worth naming rather than
+    // quietly ignoring.
+    if segment.fallback.is_some() && !segment.atomic {
+        return Err(format!("{what}.fallback needs atomic = true to take effect"));
+    }
+    // Shrinking and atomicity are contradictory instructions: one says clip me,
+    // the other says never show me clipped.
+    if segment.atomic && segment.shrink && table.get("shrink").is_some() {
+        return Err(format!("{what} cannot set both atomic and shrink"));
+    }
+    if segment.atomic {
+        segment.shrink = false;
     }
     Ok(segment)
 }

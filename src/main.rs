@@ -112,7 +112,11 @@ fn custom(argv: &[String]) -> String {
 /// The segment's body only. The prefix and suffix are applied during layout so
 /// that shortening eats into the body and never into the decoration.
 fn collect(segment: &Segment) -> String {
-    match &segment.source {
+    collect_source(&segment.source)
+}
+
+fn collect_source(source: &Source) -> String {
+    match source {
         Source::Directory => directory(),
         Source::Git => git().unwrap_or_default(),
         Source::Kubernetes => kubernetes(),
@@ -203,6 +207,10 @@ fn layout(view: &ViewDef, parts: &[String], columns: usize, color: bool) -> Stri
     };
 
     // Shorten shrinkable segments, largest first, until the row fits.
+    // `degraded` records atomic segments that have already fallen back, so a
+    // fallback that is itself too wide is dropped rather than reconsidered
+    // forever.
+    let mut degraded = vec![false; view.segments.len()];
     loop {
         let excess = width(&joined(&parts)).saturating_sub(budget);
         if excess == 0 {
@@ -216,16 +224,63 @@ fn layout(view: &ViewDef, parts: &[String], columns: usize, color: bool) -> Stri
             .max_by_key(|(index, _)| width(&parts[*index]))
             .map(|(index, _)| index)
         else {
-            // Nothing may shrink: cap the whole row instead. Cap the plain text
-            // and restyle, so a clip can never land inside an escape sequence.
+            // Nothing may shrink. Before clipping the row, give up on any
+            // `atomic` segment: it would rather be absent than truncated, and
+            // dropping the widest one may be enough to make the row fit.
+            if let Some(index) = widest_atomic(view, &parts, &degraded) {
+                parts[index] = degrade(&view.segments[index], &mut degraded[index]);
+                continue;
+            }
+            // Cap the plain text and restyle, so a clip can never land inside
+            // an escape sequence.
             return capped(view, &parts, budget, color);
         };
         let target = width(&parts[index]).saturating_sub(excess).max(1);
         let shortened = clip(&parts[index], target, view.segments[index].keep_end);
         if shortened == parts[index] {
+            // This segment cannot give any more. An atomic segment elsewhere
+            // may still be able to, so try that before capping the row.
+            if let Some(index) = widest_atomic(view, &parts, &degraded) {
+                parts[index] = degrade(&view.segments[index], &mut degraded[index]);
+                continue;
+            }
             return capped(view, &parts, budget, color);
         }
         parts[index] = shortened;
+    }
+}
+
+/// The widest `atomic` segment still showing something it can give up.
+///
+/// Widest first, because dropping the largest offender recovers the most room
+/// per segment sacrificed. A segment already showing its fallback is skipped
+/// only once that fallback has also been rejected.
+fn widest_atomic(view: &ViewDef, parts: &[String], degraded: &[bool]) -> Option<usize> {
+    view.segments
+        .iter()
+        .enumerate()
+        .filter(|(index, segment)| {
+            segment.atomic && !parts[*index].is_empty() && !degraded[*index]
+        })
+        .max_by_key(|(index, _)| width(&parts[*index]))
+        .map(|(index, _)| index)
+}
+
+/// What an `atomic` segment shows once it admits it does not fit: its
+/// fallback the first time, nothing the second.
+///
+/// The fallback is collected only at this point, so the common case where
+/// everything fits never pays for a second command.
+fn degrade(segment: &Segment, spent: &mut bool) -> String {
+    match &segment.fallback {
+        Some(source) if !*spent => {
+            *spent = true;
+            clean(&collect_source(source))
+        }
+        _ => {
+            *spent = true;
+            String::new()
+        }
     }
 }
 
@@ -756,6 +811,110 @@ prefix = "@"
             let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
             assert!(
                 error.to_lowercase().contains(&expected.to_lowercase()),
+                "{text:?} gave {error:?}, wanted {expected:?}"
+            );
+        }
+    }
+
+    /// A grid strip that is clipped still looks like a grid while hiding
+    /// whatever fell off the end, so it must never be clipped at all. This is
+    /// the flaw that the design document found in the text strip.
+    fn atomic_config(fallback: bool) -> config::Config {
+        let extra = if fallback {
+            "fallback = [\"printf\", \"%s\", \"<2!>\"]\n"
+        } else {
+            ""
+        };
+        config::parse(
+            &format!(
+                r#"
+views = ["g"]
+[view.g]
+label = "[env] "
+segments = ["directory", "grid"]
+[segment.grid]
+command = ["printf", "%s", "ooo | o@o | oo!"]
+atomic = true
+{extra}"#
+            ),
+            None,
+        )
+        .expect("atomic config parses")
+    }
+
+    #[test]
+    fn an_atomic_segment_is_shown_whole_or_not_at_all() {
+        let config = atomic_config(false);
+        // Wide enough: the grid is present and complete.
+        let wide = render(&config, "g", 200, false).unwrap();
+        assert!(wide.contains("ooo | o@o | oo!"), "{wide:?}");
+
+        // Too narrow: the grid must vanish rather than appear truncated. A
+        // partial grid is the one outcome worse than no grid.
+        let narrow = render(&config, "g", 24, false).unwrap();
+        assert!(!narrow.contains("ooo"), "a clipped grid survived: {narrow:?}");
+    }
+
+    #[test]
+    fn an_atomic_segment_swaps_to_its_fallback_when_it_cannot_fit() {
+        let config = atomic_config(true);
+        let narrow = render(&config, "g", 24, false).unwrap();
+        // The summary is honest about being a summary, and it keeps the alert.
+        assert!(narrow.contains("<2!>"), "{narrow:?}");
+        assert!(!narrow.contains("ooo"), "{narrow:?}");
+    }
+
+    #[test]
+    fn a_shrinkable_segment_is_still_preferred_over_dropping_an_atomic_one() {
+        // Sacrificing a whole segment is a bigger loss than trimming a path,
+        // so the directory should give way first while the row still fits.
+        let config = atomic_config(false);
+        let row = render(&config, "g", 40, false).unwrap();
+        assert!(row.contains("ooo | o@o | oo!"), "{row:?}");
+    }
+
+    #[test]
+    fn a_fallback_that_also_does_not_fit_is_dropped_rather_than_looping() {
+        // The degradation must terminate even when the fallback is itself too
+        // wide, or layout would reconsider the same segment forever.
+        let config = config::parse(
+            r#"
+views = ["g"]
+[view.g]
+label = "[env] "
+segments = ["grid"]
+[segment.grid]
+command = ["printf", "%s", "ooo | o@o | oo!"]
+atomic = true
+fallback = ["printf", "%s", "still far too wide to fit in this row"]
+"#,
+            None,
+        )
+        .expect("parses");
+        let row = render(&config, "g", 12, false).unwrap();
+        assert!(!row.contains("still far too wide"), "{row:?}");
+    }
+
+    #[test]
+    fn atomic_and_fallback_reject_contradictory_configuration() {
+        let cases = [
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"s\"]\n[segment.s]\ncommand = [\"true\"]\nfallback = [\"true\"]",
+                "needs atomic",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"s\"]\n[segment.s]\ncommand = [\"true\"]\natomic = true\nshrink = true",
+                "cannot set both",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"s\"]\n[segment.s]\ncommand = [\"true\"]\natomic = true\nfallback = []",
+                "must name a program",
+            ),
+        ];
+        for (text, expected) in cases {
+            let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
+            assert!(
+                error.to_lowercase().contains(expected),
                 "{text:?} gave {error:?}, wanted {expected:?}"
             );
         }

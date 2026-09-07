@@ -29,6 +29,16 @@ segments = ["directory", "kubernetes"]
 # shrink = true      # may be shortened to fit the terminal width
 # style = { fg = "blue", bold = true }
 #
+# Some values are only true when they are complete. A status marker clipped
+# halfway still looks like a status marker while hiding whatever fell off the
+# end, which is worse than showing nothing at all. Such a segment can refuse to
+# be shortened, and offer something briefer in its place:
+#
+# [segment.status]
+# command = ["my-status", "--full"]
+# atomic = true                       # show it whole or not at all
+# fallback = ["my-status", "--brief"] # what to show instead when it will not fit
+#
 # Styling is structured configuration, applied after the row is laid out, so
 # colour never affects the measured width. fg and bg take a colour name
 # (red, bright_red), a 0-255 palette index, or #rrggbb. The attributes are
