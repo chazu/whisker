@@ -200,15 +200,14 @@ With a 16-character command, Ctrl-A landed on column 4, exactly where the
 command begins, and Ctrl-E on column 20. Exact, where the naive `\[ \]`
 prompt was off by 12.
 
-Be clear about what that does and does not establish. pyte does not implement
-APC at all; fed a graphics escape it prints the payload as text. So what was
-verified is the *accounting rule*, that a prompt drawing N cells while
-declaring N countable columns keeps Readline exact. That the kitty protocol
-supplies those semantics via `c=`, `r=` and `C=1` is read from its
-specification, not executed here. The remaining risk is that a terminal
-implements `C=1` loosely, and the spec itself leaves cursor position undefined
-when a placement runs past the screen edge. That is the thing to check first in
-a real terminal.
+Be clear about what that established. pyte does not implement APC at all; fed
+a graphics escape it prints the payload as text. So under the emulator what
+was verified is the *accounting rule*, that a prompt drawing N cells while
+declaring N countable columns keeps Readline exact. The kitty semantics that
+supply it, `c=`, `r=` and `C=1`, were then confirmed separately in Ghostty,
+where the images sat flush inside their brackets. The spec still leaves cursor
+position undefined when a placement runs past the screen edge, which remains
+untested.
 
 The cell size this depends on is real and available: `TIOCGWINSZ` returned
 1280x816 pixels for an 80x24 tty, giving exactly the 16x34 cell the probe
@@ -266,6 +265,34 @@ this reason.
 `pixelgrid.py` implements all of this and self-tests without a terminal:
 `python3 docs/probes/pixelgrid.py --selftest`. Run it without arguments in a
 real terminal to see the grid inline.
+
+**Confirmed in Ghostty.** The design was run in a real terminal, which settles
+the questions the probes could not and corrects one of them.
+
+- **The placement works and the accounting is exact.** Both a 6px and a 10px
+  grid rendered inline, each sitting flush between a `[` and a `]` with no gap
+  and no overlap. `C=1` is honoured and `c=`/`r=` behave as the spec says, so
+  the part previously marked "read from the spec, not executed" is now
+  executed. The graphics query replied `OK`, and `TIOCGWINSZ` gave a 16x34
+  cell.
+- **It reads at a glance.** The white "you" dot and the red alert are
+  immediately locatable against the idle greys, at both sizes. This was the
+  open question that decided the design, and the answer is yes.
+- **Sizes are in points, not device pixels.** Measured on a 2x display, art
+  built 20x20 was drawn 10x10 points, and 32x32 was drawn 16x16. The terminal
+  scales the image into the declared cell box, which is in points, so on HiDPI
+  the art must be built at twice the size to stay crisp. This kills the
+  original "one pixel per node" phrasing: one *device* pixel is half a point
+  and effectively invisible. `--dpr 2` builds a 22x22 grid in the same single
+  cell for 146 bytes.
+- **The background must be transparent.** The first version used an opaque
+  black backdrop, which painted a visible rectangle over the row and read as
+  the image overflowing its line. It was not overflowing: the backdrop measured
+  exactly 34 points, one row. The encoder now emits RGBA with a transparent
+  background, so only the dots are drawn.
+
+Still unchecked: Ctrl-L, resize, and scrollback, whose invariants were
+established for a text row rather than an image.
 
 **Recommendation:** build D, with A's text strip as the fallback for terminals
 that cannot draw it, and C as an on-demand full map. B's always-visible text
@@ -495,7 +522,12 @@ emulator. Each probe drove an actual interactive shell.
 | Sixel through the real binary | Blanked by `clean`; a picture must be generated internally, not via a segment |
 | Prompt that under-reports its width | Ctrl-A put the cursor at column 0 against text at column 12 |
 | Image sized to whole cells, cursor pinned | Accounting rule exact: Ctrl-A at column 4, Ctrl-E at 20 for a 16-char command |
-| `c=`/`r=`/`C=1` semantics themselves | **Read from the spec, not executed**; pyte prints APC payloads as text |
+| `c=`/`r=`/`C=1` semantics themselves | Confirmed in Ghostty: images sat flush inside their brackets |
+| Does the grid read at a glance | Yes; the current and alert dots are immediately locatable at 6px and 10px |
+| Drawn size on a 2x display | Art of 20x20 drew 10x10 points: the cell box is points, so HiDPI needs `--dpr 2` |
+| Opaque image background | Painted a visible rectangle over the row; fixed by emitting RGBA |
+| Ghostty graphics query | Replied `OK`; `TIOCGWINSZ` gave a 16x34 cell |
+| Ctrl-L, resize, scrollback with an image | **Not established**; those invariants were set for a text row |
 | Cell size from `TIOCGWINSZ` | 1280x816 for an 80x24 tty, giving a 16x34 cell |
 | Trusted vs untrusted escape paths | A style's `ESC[0;1;32m` survives while a segment's `ESC[31m` is blanked |
 | 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, ~110 byte payload |

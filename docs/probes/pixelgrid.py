@@ -51,7 +51,12 @@ def cell_size():
 
 
 def png(pixels, w, h):
-    """Minimal RGB PNG encoder, so the probe has no dependencies."""
+    """Minimal RGBA PNG encoder, so the probe has no dependencies.
+
+    RGBA rather than RGB because the background must be transparent: measured
+    in a real terminal, an opaque backdrop paints a visible black rectangle
+    over the row, which looks like the image overflowing its line.
+    """
 
     def chunk(tag, data):
         c = tag + data
@@ -64,19 +69,45 @@ def png(pixels, w, h):
             raw += bytes(pixels[y][x])
     return (
         b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
         + chunk(b"IDAT", zlib.compress(raw))
         + chunk(b"IEND", b"")
     )
+
+
+def png_pixel(data, x, y):
+    """Read one RGBA pixel back out of our own PNG, without Pillow.
+
+    Only handles what `png` writes: 8-bit RGBA, filter 0 on every row.
+    """
+    pos, w, h = 8, None, None
+    idat = b""
+    while pos < len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        tag = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + length]
+        if tag == b"IHDR":
+            w, h = struct.unpack(">II", body[:8])
+        elif tag == b"IDAT":
+            idat += body
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    stride = 1 + w * 4
+    off = y * stride + 1 + x * 4
+    return tuple(raw[off:off + 4])
 
 
 def build(grid, scale, cell, pad_to_cells, gap=1):
     """Draw the dots. `grid` is a list of rows of state names.
 
     `scale` is the size of a dot in pixels and `gap` the space between dots,
-    kept independent so a one-pixel gap survives a larger dot. On a HiDPI
-    display a one-device-pixel dot is not reliably visible, which is why scale
-    defaults above 1.
+    kept independent so a one-pixel gap survives a larger dot.
+
+    Note that `cell` is in points, not device pixels. Measured in Ghostty on a
+    2x display, the terminal scales the image to the declared cell box in
+    points, so a dot of N image pixels is drawn N/2 points wide. To hit a
+    target apparent size on HiDPI the art must be built at twice the size; see
+    `--dpr`. This is also why a one-device-pixel dot is not a usable unit.
     """
     rows, cols = len(grid), len(grid[0])
     step = scale + gap
@@ -90,12 +121,12 @@ def build(grid, scale, cell, pad_to_cells, gap=1):
     if art_w > img_w or art_h > img_h:
         return None, want_cells, (art_w, art_h), (img_w, img_h)
 
-    bg = (0, 0, 0)
+    bg = (0, 0, 0, 0)  # transparent: let the terminal background show through
     px = [[bg for _ in range(img_w)] for _ in range(img_h)]
     ox, oy = (img_w - art_w) // 2, (img_h - art_h) // 2
     for r, row in enumerate(grid):
         for c, state in enumerate(row):
-            color = COLORS.get(state, COLORS["idle"])
+            color = COLORS.get(state, COLORS["idle"]) + (255,)
             for dy in range(scale):
                 for dx in range(scale):
                     px[oy + r * step + dy][ox + c * step + dx] = color
@@ -166,6 +197,20 @@ def selftest():
     check("two cells hold 8x8 nodes at 3px, and no more",
           fits(8, 8, 3, 2) and not fits(9, 8, 3, 2))
 
+    # Both of these were found by running the probe in a real terminal, so
+    # assert them here rather than rediscovering them by eye.
+    check("PNG is RGBA, so the background can be transparent",
+          data[24:26] == b"\x08\x06")
+    corner = png_pixel(data, 0, 0)
+    check("image corner is fully transparent", corner[3] == 0)
+    check("a dot is fully opaque", png_pixel(data, 8, 17)[3] == 255)
+
+    # On a 2x display the terminal scales into a box measured in points, so
+    # doubling the art must still occupy the same single cell.
+    hidpi, hcells, hart, _ = build(grid, 6, (32, 68), 0, gap=2)
+    check("doubled art still fits one cell at dpr 2",
+          hidpi is not None and hcells == 1 and hart == (22, 22))
+
     print("failures:", failures)
     return 1 if failures else 0
 
@@ -174,6 +219,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scale", type=int, default=3, help="pixels per dot")
     ap.add_argument("--gap", type=int, default=1, help="pixels between dots")
+    ap.add_argument("--dpr", type=int, default=1,
+                    help="device pixel ratio; 2 on a Retina display")
     ap.add_argument("--cells", type=int, default=0, help="force cell width")
     ap.add_argument("--probe", action="store_true")
     ap.add_argument("--selftest", action="store_true")
@@ -207,9 +254,13 @@ def main():
 
     # Show a range of dot sizes, because the right one depends on the display
     # and the font, and a single sample would beg the question.
+    # On HiDPI the terminal scales the image into a box measured in points,
+    # so building the art at dpr times the size keeps dots crisp.
+    art_cell = (cell[0] * args.dpr, cell[1] * args.dpr)
     scales = (args.scale,) if args.cells else (2, 3, 4)
     for scale in scales:
-        data, cells, art, img = build(grid, scale, cell, args.cells, args.gap)
+        data, cells, art, img = build(grid, scale * args.dpr, art_cell,
+                                      args.cells, args.gap * args.dpr)
         if data is None:
             print(f"  dot={scale}px: does not fit "
                   f"({art[0]}x{art[1]} into {img[0]}x{img[1]})")
