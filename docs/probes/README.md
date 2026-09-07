@@ -64,3 +64,10 @@ Two worth rerunning if you doubt the document:
   `--dump N` to write one PNG for an independent decoder to verify.
 
 `configs/` holds the Whisker configurations `integration.py` renders.
+- `gridsegment.py` is the only probe that exercises design D as a shipped
+  feature rather than a prototype. It runs the real binary on a pty that
+  reports a cell size, decodes the PNG the renderer emitted, and checks the
+  drawing against the configured state: the current node white, alerts red, and
+  an unclaimed cell not drawn at all. It also covers the two fallback paths, a
+  terminal with no cell size and one reporting zeroes, where the segment must
+  vanish rather than guess.

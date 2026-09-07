@@ -1,13 +1,15 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal, with the navigation and state halves built. `atomic` and
-`fallback` on segments have landed, closing the correctness gap that made a
-truncated grid dangerous; so have grid coordinates and 2D movement (`[grid]`,
-`at`, `view move`, `view grid`), reading per-node state (`grid.state`), and the
-collector that writes it (`alert`, `whisker collect`). What remains is the
-picture: design D exists as two working prototypes, `docs/probes/pixelgrid.py`
-for rendering and `docs/probes/pixelgrid.rs` for the Rust implementation and
-its cost, but nothing draws it in the prompt yet.
+**Status:** built. Every step of the plan below has landed: `atomic` and
+`fallback` on segments, grid coordinates and 2D movement (`[grid]`, `at`,
+`view move`, `view grid`), reading per-node state (`grid.state`), the collector
+that writes it (`alert`, `whisker collect`), and the picture itself (the
+built-in `grid` segment). `docs/probes/pixelgrid.py` and
+`docs/probes/pixelgrid.rs` remain as the prototypes the design was measured
+with; `docs/probes/gridsegment.py` checks the shipped feature.
+
+What is not built is the *interaction*: binding keys to `view move`, the
+alternate-screen overlay of design C, and a `changed` alert rule.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
@@ -435,16 +437,13 @@ state file is already neutralised.
   file that anything may write, read at prompt time and neutralised against
   hostile content. What remains is somewhere to keep the *previous* value that
   a `changed` rule would compare against.
-- For design D: emitting a graphics placement from inside the renderer rather
+- ~~For design D: emitting a graphics placement from inside the renderer rather
   than through a segment, plus startup detection of protocol support and cell
-  size. `pixelgrid.rs` is a complete implementation of the drawing and encoding
-  in about 300 lines with no dependencies, measured at 40 us, so the remaining
-  work is wiring rather than invention. It is still genuinely new ground for
-  this codebase, which has never written a byte the layout engine did not
-  measure.
-- Anything at all that updates node state. See
-  [Nothing updates yet](#nothing-updates-yet); this is the difference between a
-  picture and a feature.
+  size.~~ **Built** as `src/pixels.rs`, about 300 lines with no dependencies,
+  carrying its own deflate encoder because PNG needs a zlib stream. The
+  placement is emitted by the renderer, never through a segment, which is what
+  keeps `clean` guarding untrusted output unchanged.
+- ~~Anything at all that updates node state.~~ **Built** as `whisker collect`.
 
 The order matters: `atomic` is worth adding on its own merits, independent of
 whether the grid is ever built.
@@ -600,9 +599,8 @@ a picture yet.
    configuration, so this is mostly a matter of generating the strip rather
    than hand-writing it.
 2. **The pixel grid (D)** behind capability detection, falling back to step 1.
-   `pixelgrid.rs` is a complete Rust implementation of the renderer, measured
-   at 40 us, so this is a matter of porting it in and querying support and cell
-   size at startup.
+   *Built.* The built-in `grid` segment draws it, sized from `TIOCGWINSZ` and
+   absent when the terminal will not report a cell size.
 3. **Navigation.** *Built.* Grid coordinates and `view move` exist, so the
    model is navigable from the command line. What remains is binding keys to
    it, with the existing input-preservation checks extended to cover them.

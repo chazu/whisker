@@ -290,6 +290,41 @@ with no `alert` is left out of the file entirely rather than being invented as
 `ok`. The file is replaced through a temporary and a rename, so a prompt reading
 at the same moment sees either the old contents or the new ones, never a mixture.
 
+### Drawing the grid
+
+Add the built-in `grid` segment to a view and the grid is drawn inline as a
+small image: a dot per node, colour carrying state, white for where you are.
+
+```toml
+[view.infra_prod]
+segments = ["grid", "directory", "kubernetes"]
+at = ["infra", "prod"]
+
+[segment.grid]
+dot = 4      # points per node; 4 or 5 read best, the useful range is 3 to 6
+gap = 1      # points between nodes
+```
+
+Sizes are in points rather than device pixels, because that is the unit you are
+really choosing. On a scaled display set `WHISKER_SCALE=2` so the art is built
+at twice the size and stays crisp; nothing in the terminal's size report reveals
+the scale factor, so it is asked for rather than guessed.
+
+The image is placed in an exact number of cells with the cursor pinned, and the
+segment reserves that many spaces for Readline to count, so the prompt's
+declared width is true by construction rather than estimated.
+
+Drawing needs two things: a terminal that implements the kitty graphics
+protocol, and one that reports its cell size. Without either the segment simply
+disappears along with its separator, exactly as a failing command segment does,
+and the rest of the row is unaffected. That covers tmux, Zellij, terminals
+without the protocol, and terminals like iTerm2 that report zero pixel
+dimensions.
+
+A grid too large for the space is not drawn at all rather than drawn partially,
+for the same reason a status marker is `atomic`: half a grid still looks like a
+grid while hiding whatever fell off the edge.
+
 Known limits. Collectors are synchronous and local, so a slow Git repository or
 custom command delays a redraw; there are no timeouts. Styling is static: it
 cannot yet depend on state, so "red when the branch is dirty" cannot be

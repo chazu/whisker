@@ -20,6 +20,13 @@ pub enum Source {
     Git,
     /// Selected kubectl context and namespace.
     Kubernetes,
+    /// The view grid, drawn as a small inline image.
+    ///
+    /// Unlike every other source this one does not produce text. It reserves a
+    /// number of cells that Readline can count and hands the placement escape
+    /// to the caller to emit separately, which is what keeps the prompt's
+    /// declared width honest.
+    Grid,
     /// A user-defined local command; argv, never a shell string.
     Command(Vec<String>),
 }
@@ -47,6 +54,13 @@ pub struct Segment {
     /// Empty means drop the segment entirely. A shorter summary is usually
     /// better than silence, so long as it is honest about being a summary.
     pub fallback: Option<Source>,
+    /// For a `grid` segment: points per node, and points between them.
+    ///
+    /// Points rather than device pixels, because that is the unit the user is
+    /// really choosing. One device pixel is half a point on a 2x display and
+    /// effectively invisible.
+    pub dot: usize,
+    pub gap: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -406,6 +420,7 @@ fn builtin(name: &str) -> Option<Source> {
         "directory" => Some(Source::Directory),
         "git" => Some(Source::Git),
         "kubernetes" => Some(Source::Kubernetes),
+        "grid" => Some(Source::Grid),
         _ => None,
     }
 }
@@ -420,8 +435,14 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
         // The directory is the one long, safely truncatable segment by default.
         shrink: name == "directory",
         keep_end: name == "directory",
-        atomic: false,
+        // A picture cannot be shortened: half a grid still looks like a grid
+        // while hiding whatever fell off the edge.
+        atomic: name == "grid",
         fallback: None,
+        // Points per node and between nodes. These are the sizes that read
+        // best on a HiDPI display; the useful range is about 3 to 6.
+        dot: 4,
+        gap: 1,
     };
     let Some(table) = table else {
         return builtin(name)
@@ -432,7 +453,7 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
         table,
         &[
             "command", "prefix", "suffix", "shrink", "keep_end", "style",
-            "atomic", "fallback",
+            "atomic", "fallback", "dot", "gap",
         ],
         &what,
     )?;
@@ -471,6 +492,23 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
     }
     if let Some(value) = table.get("atomic") {
         segment.atomic = as_bool(value, &format!("{what}.atomic"))?;
+    }
+    for (key, field) in [("dot", true), ("gap", false)] {
+        let Some(value) = table.get(key) else { continue };
+        if segment.source != Source::Grid {
+            return Err(format!("{what}.{key} only applies to the grid segment"));
+        }
+        let size = value
+            .as_integer()
+            .filter(|size| *size >= 0 && *size <= 64)
+            .ok_or_else(|| format!("{what}.{key} must be a size in points, 0 to 64"))?
+            as usize;
+        // A dot of zero would draw nothing at all, which is not a size but a
+        // way of switching the grid off by accident.
+        if field && size == 0 {
+            return Err(format!("{what}.dot must be at least 1 point"));
+        }
+        if field { segment.dot = size } else { segment.gap = size }
     }
     if let Some(value) = table.get("fallback") {
         let argv = value

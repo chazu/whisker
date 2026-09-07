@@ -1,5 +1,6 @@
 //! Collect one information row from the configured view; Bash owns editing.
 mod config;
+mod pixels;
 mod style;
 
 use std::{
@@ -121,6 +122,9 @@ fn collect_source(source: &Source) -> String {
         Source::Directory => directory(),
         Source::Git => git().unwrap_or_default(),
         Source::Kubernetes => kubernetes(),
+        // Filled in by `render`, which alone knows the terminal's cell size
+        // and how many cells the picture will need.
+        Source::Grid => String::new(),
         Source::Command(argv) => custom(argv),
     }
 }
@@ -312,9 +316,51 @@ fn capped(view: &ViewDef, parts: &[String], budget: usize, color: bool) -> Strin
 }
 
 fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<String, String> {
+    let name = view;
     let view = config.view(view)?;
-    let parts: Vec<String> = view.segments.iter().map(collect).collect();
-    Ok(layout(view, &parts, columns, color))
+    let mut parts: Vec<String> = view.segments.iter().map(collect).collect();
+
+    // The grid is a picture, so it cannot be laid out as text. Instead it
+    // reserves the cells it needs, as spaces Readline can count, and the
+    // placement escape is emitted just before the row so the image lands on
+    // them. Where the terminal cannot draw, the segment stays empty and
+    // disappears along with its separator, which is the text fallback.
+    let mut placement = String::new();
+    if let Some(index) = view
+        .segments
+        .iter()
+        .position(|segment| segment.source == Source::Grid)
+    {
+        let segment = &view.segments[index];
+        if let Some(cell) = pixels::cell_size() {
+            // A dot is configured in points but drawn in device pixels, so
+            // work out the cells from the point sizes and let the renderer
+            // scale up.
+            let step = segment.dot + segment.gap;
+            let wanted = config.grid.columns.len() * step - segment.gap;
+            let cells = wanted.div_ceil(cell.0).max(1);
+            // TIOCGWINSZ reports device pixels, but the terminal scales the
+            // image into a box measured in points, so the art must be built
+            // at the display's scale factor to stay crisp. Nothing in the
+            // ioctl reveals that factor, and guessing it from the cell size
+            // would be wrong for a large font on a 1x display, so it is asked
+            // for rather than inferred.
+            let dpr = env::var("WHISKER_SCALE")
+                .ok()
+                .and_then(|text| text.parse::<usize>().ok())
+                .filter(|scale| (1..=4).contains(scale))
+                .unwrap_or(1);
+            if let Some(escape) =
+                pixels::placement(config, name, cell, cells, segment.dot, segment.gap, dpr)
+            {
+                placement = escape;
+                parts[index] = " ".repeat(cells);
+            }
+        }
+    }
+
+    let row = layout(view, &parts, columns, color);
+    Ok(format!("{placement}{row}"))
 }
 
 /// Run every node's check and write the results to the state file.
@@ -951,8 +997,8 @@ prefix = "@"
 views = ["g"]
 [view.g]
 label = "[env] "
-segments = ["directory", "grid"]
-[segment.grid]
+segments = ["directory", "strip"]
+[segment.strip]
 command = ["printf", "%s", "ooo | o@o | oo!"]
 atomic = true
 {extra}"#
@@ -1002,8 +1048,8 @@ atomic = true
 views = ["g"]
 [view.g]
 label = "[env] "
-segments = ["grid"]
-[segment.grid]
+segments = ["strip"]
+[segment.strip]
 command = ["printf", "%s", "ooo | o@o | oo!"]
 atomic = true
 fallback = ["printf", "%s", "still far too wide to fit in this row"]

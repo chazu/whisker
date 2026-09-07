@@ -46,7 +46,19 @@ segments = ["directory", "kubernetes"]
 # prompt. Anything unreadable or malformed leaves that node unknown.
 #
 # Segments only need a [segment.name] entry to customise them, or to define a
-# new one. Built-in sources: directory, git, kubernetes.
+# new one. Built-in sources: directory, git, kubernetes, grid.
+#
+# The grid segment draws the view grid as a small inline image, one dot per
+# node, coloured by state, white for where you are. It needs a terminal that
+# supports the kitty graphics protocol and reports its cell size; without both
+# it simply disappears, like any other segment with nothing to say.
+#
+# [segment.grid]
+# dot = 4    # points per node; 4 or 5 read best, useful range 3 to 6
+# gap = 1    # points between nodes
+#
+# On a scaled display set WHISKER_SCALE=2 so the art is built at twice the
+# size, since the terminal scales the image into a box measured in points.
 #
 # [segment.directory]
 # keep_end = true    # shorten as …/deep/tail rather than head…

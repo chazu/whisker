@@ -1,0 +1,25 @@
+views = ["a1", "a2", "a3", "b1", "b3"]
+start = "b1"
+
+[grid]
+rows = ["top", "bottom"]
+columns = ["left", "mid", "right"]
+state = "/tmp/whisker-probe-grid-state"
+
+# [bottom, mid] is deliberately left unclaimed, so the probe can check that an
+# undefined cell is not drawn rather than being filled in as idle.
+[view.a1]
+segments = ["grid", "directory"]
+at = ["top", "left"]
+[view.a2]
+segments = ["grid", "directory"]
+at = ["top", "mid"]
+[view.a3]
+segments = ["grid", "directory"]
+at = ["top", "right"]
+[view.b1]
+segments = ["grid", "directory"]
+at = ["bottom", "left"]
+[view.b3]
+segments = ["grid", "directory"]
+at = ["bottom", "right"]
