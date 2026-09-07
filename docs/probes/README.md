@@ -24,6 +24,8 @@ python3 -m venv .venv && .venv/bin/pip install pyte
 python3 docs/probes/pixelgrid.py               # ...and see it, in a real terminal
 .venv/bin/python docs/probes/invariants.py     # Ctrl-L, resize, scrollback
 python3 docs/probes/docaudit.py                # do the doc's numbers still hold?
+rustc -O docs/probes/pixelgrid.rs -o /tmp/pg && /tmp/pg   # design D's cost in Rust
+rustc -O --test docs/probes/pixelgrid.rs -o /tmp/pgt && /tmp/pgt
 ```
 
 The Bash probes need Bash 5+ (`/opt/homebrew/bin/bash` on this machine; edit the
@@ -51,7 +53,14 @@ Two worth rerunning if you doubt the document:
   what it can answer.
 - `docaudit.py` re-derives the measurements quoted in `grid-design.md` from the
   code and fails if they have drifted. It needs neither a terminal nor any
-  dependency. It has already earned its place: switching the encoder to RGBA
-  moved the payload from 110 to 124 bytes and the document did not notice.
+  dependency, though it will build and run `pixelgrid.rs` if `rustc` is present.
+  It has already earned its place twice: switching the encoder to RGBA moved the
+  payload from 110 to 124 bytes without the document noticing, and it later
+  caught a figure updated in the cost table but not the appendix.
+- `pixelgrid.rs` answers whether design D is affordable in Rust. It is a
+  complete renderer, dots through PNG through base64 through escape, with no
+  dependencies: PNG needs a zlib stream, so it carries a small fixed-Huffman
+  deflate encoder. Run it plain to benchmark, `--test` for its own checks, or
+  `--dump N` to write one PNG for an independent decoder to verify.
 
 `configs/` holds the Whisker configurations `integration.py` renders.

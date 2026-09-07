@@ -37,5 +37,46 @@ check("doc quotes the real dpr=2 size", f"{len(d2)} bytes" in doc, f"{len(d2)} b
 check("doc no longer rejects graphics outright",
       "(rejected)" not in doc)
 check("doc marks D as recommended", "### D. A pixel grid, drawn as an image (recommended)" in doc)
+
+# --- the Rust benchmark's numbers -------------------------------------------
+# These are quoted in "Will it be fast enough?" and in the appendix. Re-derive
+# them by running the benchmark, so a change in the encoder cannot leave the
+# document asserting a speed or size that is no longer true.
+import subprocess, shutil, tempfile
+rs = os.path.join(HERE, "pixelgrid.rs")
+if shutil.which("rustc") is None:
+    print("  skip  rustc not available; Rust numbers unchecked")
+else:
+    exe = os.path.join(tempfile.mkdtemp(prefix="whisker-bench-"), "pixelgrid")
+    subprocess.run(["rustc", "-O", rs, "-o", exe], check=True,
+                   capture_output=True)
+    out = subprocess.run([exe], capture_output=True, text=True).stdout
+    sizes = dict(re.findall(r"^  (.+?)\s{2,}[\d.]+ us\s+(\d+) bytes$", out, re.M))
+    def size_of(prefix):
+        for label, n in sizes.items():
+            if label.startswith(prefix):
+                return int(n)
+        return None
+    four = size_of("3x3 grid, 4px dots")
+    five = size_of("3x3 grid, 5px dots")
+    panels = size_of("4 grids side by side")
+    tall = size_of("7x3 grid, 4px dots")
+    # Each figure appears in both the cost table and the appendix, so require
+    # the expected number of occurrences rather than merely one: otherwise
+    # updating a number in one place and not the other still passes.
+    check("doc quotes the real 4px payload twice",
+          doc.count(f"{four} bytes") == 2, f"{four}, seen {doc.count(f'{four} bytes')}x")
+    check("doc quotes the real 5px payload", f"{five} bytes" in doc, str(five))
+    # The four-panel figure is quoted in three places: the prose under
+    # "Several grids at once", the cost table, and the appendix.
+    check("doc quotes the real four-panel payload in all three places",
+          doc.count(str(panels)) == 3, f"{panels}, seen {doc.count(str(panels))}x")
+    check("doc quotes the real 7-row payload", f"{tall} bytes" in doc, str(tall))
+    check("doc's 7-rows-per-cell claim matches the benchmark",
+          re.search(r"^  7x3 grid, 4px dots, 1 cell\s+[\d.]+ us", out, re.M) is not None
+          and re.search(r"^  8x3 grid, 4px dots, 1 cell\s+does not fit", out, re.M) is not None
+          and "holds seven rows, not eight" in doc)
+    check("doc records the stored-block payload it rejected", "11841 bytes" in doc)
+
 print("failures:",len(fails))
 sys.exit(1 if fails else 0)

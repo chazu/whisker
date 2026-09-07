@@ -1,7 +1,9 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal. Nothing here is built. Design D is a working prototype in
-`docs/probes/pixelgrid.py`, but nothing has landed in Whisker itself.
+**Status:** proposal. Nothing has landed in Whisker itself. Design D exists as
+two working prototypes: `docs/probes/pixelgrid.py` for rendering and
+`docs/probes/pixelgrid.rs` for the Rust implementation and its cost. Neither
+is wired into the renderer, and nothing yet updates the state the grid shows.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
@@ -418,9 +420,14 @@ state file is already neutralised.
   would compare against.
 - For design D: emitting a graphics placement from inside the renderer rather
   than through a segment, plus startup detection of protocol support and cell
-  size. `pixelgrid.py` shows the whole of it in about 150 lines, so the port is
-  small, but it is genuinely new ground for this codebase, which has never
-  written a byte the layout engine did not measure.
+  size. `pixelgrid.rs` is a complete implementation of the drawing and encoding
+  in about 300 lines with no dependencies, measured at 40 us, so the remaining
+  work is wiring rather than invention. It is still genuinely new ground for
+  this codebase, which has never written a byte the layout engine did not
+  measure.
+- Anything at all that updates node state. See
+  [Nothing updates yet](#nothing-updates-yet); this is the difference between a
+  picture and a feature.
 
 The order matters: `atomic` is worth adding on its own merits, independent of
 whether the grid is ever built.
@@ -442,18 +449,103 @@ alert = { command = ["check-staging"], when = "exit" }
 [grid.display]
 mode = "pixels"         # pixels | strip | block | overlay
 fallback = "strip"      # when the terminal cannot draw pixels
-dot = 3                 # pixels per node
-gap = 1                 # pixels between nodes
+dot = 4                 # points per node; 4 or 5 reads best, see below
+gap = 1                 # points between nodes
 position_style = { fg = "green", bold = true }
 alert_style = { fg = "red", bold = true }
 ```
 
-The styles serve both paths: design D reads them as dot colours, design A as
-SGR attributes, which is what keeps the two displays from disagreeing.
+`dot` and `gap` are in **points, not device pixels**, because that is the unit
+the user is really choosing: on a 2x display Whisker doubles them internally so
+the drawn size is what was asked for. Sizes of 4 and 5 were preferred when the
+prototype was viewed on a Retina display at the author's font size; 3 is legible
+but small, and the useful range is roughly 3 to 6. A `dot` of 1 is not offered,
+since one device pixel is half a point and effectively invisible.
+
+The styles serve both display paths: design D reads them as dot colours,
+design A as SGR attributes, which is what keeps the two from disagreeing.
+
+### Several grids at once
+
+Nothing says a view has one grid. Independent concerns can sit in adjacent
+cells, which is cheap because they are drawn as a *single* image spanning all
+of them:
+
+```toml
+[grid.display]
+mode = "pixels"
+panels = ["environments", "services", "queues"]   # left to right, one cell each
+gap_cells = 0            # blank cells between panels, if separation helps
+
+[panel.environments]
+rows = ["code", "infra", "data"]
+columns = ["ops", "staging", "prod"]
+```
+
+One placement rather than N matters for correctness as much as speed: the
+prompt then has one width to declare instead of several, so there is one number
+to get right. Measured, four 3x3 panels across four cells is a single escape of
+3551 bytes built in 175 us.
 
 Sparse grids need a decision: if `[node.data.prod]` is undefined, is it an empty
 cell you can move onto, or is it skipped? Skipping is friendlier; showing a hole
 is more honest about the shape.
+
+## Will it be fast enough?
+
+This is per-prompt work on the interactive path, so it has to be cheap.
+Measured with a full Rust implementation in `pixelgrid.rs`, which paints the
+dots, encodes a PNG, base64s it and builds the escape:
+
+| Work | Time | Payload |
+| --- | --- | --- |
+| 3x3 grid, 4px dots, one cell | 40 us | 991 bytes |
+| 3x3 grid, 5px dots, one cell | 42 us | 1135 bytes |
+| Four 3x3 panels, four cells | 175 us | 3551 bytes |
+| 7x3 grid, 4px dots, one cell | 48 us | 2035 bytes |
+
+Against the collectors this prompt already runs, at 2 ms for a directory, 5 ms
+for Git and 29 ms for Kubernetes, the grid is noise: a typical grid costs about
+0.1% of a single Kubernetes segment. Rendering is not the thing to worry about,
+and never was. The collectors are, which is why they belong in a background
+process; see [When it is collected](#when-it-is-collected).
+
+Two implementation notes that the measurement forced:
+
+- **The PNG must be compressed.** The first encoder used stored deflate blocks
+  to avoid a dependency, and produced 11841 bytes for one small grid. The image
+  is mostly transparent, so real deflate takes the same data to a few hundred
+  bytes. Fixed-Huffman with run-length matches is enough, needs no code-length
+  table, and keeps the dependency count at zero. Matching at distance 4 as well
+  as 1 is what makes it work, because a run of identical *pixels* is four bytes
+  apart.
+- **A cell is 68 device pixels tall on a 2x display**, so at 4-point dots a
+  single cell holds seven rows, not eight. The renderer must refuse the eighth
+  rather than clip it, for the same reason design A needed `atomic`.
+
+## Nothing updates yet
+
+Everything above renders state. Nothing *produces* it, and until something
+does, the grid is a decoration that always shows the same picture. This is the
+gap between the prototype and a feature, and it is the largest remaining piece
+of work.
+
+What is missing, in order:
+
+1. **A source of node state.** The state file described under
+   [Alerts](#alerts) is the mechanism: one line per node, written by anything,
+   read through an ordinary segment so `clean` still guards it.
+2. **A collector** that polls each node's `alert.command` on its own schedule
+   and writes that file. This is the part that cannot be inline, because
+   nine Kubernetes checks would add a quarter of a second to every prompt.
+3. **A refresh path.** The prompt hook reads the file, so state advances when a
+   prompt is drawn or a key is pressed. Remember that
+   [async is not available](#async-is-not-available): the grid is as fresh as
+   the last keystroke, not as fresh as the world, and the UI should not imply
+   otherwise.
+
+Until at least steps 1 and 2 exist, the honest description of this feature is
+"a navigable map", not "an alerting dashboard".
 
 ## What could go wrong
 
@@ -484,12 +576,14 @@ is more honest about the shape.
    configuration, so this is mostly a matter of generating the strip rather
    than hand-writing it.
 2. **The pixel grid (D)** behind capability detection, falling back to step 1.
-   `pixelgrid.py` already renders it; this is a matter of porting that to Rust
-   and querying support and cell size at startup.
+   `pixelgrid.rs` is a complete Rust implementation of the renderer, measured
+   at 40 us, so this is a matter of porting it in and querying support and cell
+   size at startup.
 3. **Navigation.** Leader key plus directional keys, with the existing
    input-preservation checks extended to cover it.
 4. **Alert state file.** Reading and display only, with a documented format, so
-   anything can write it.
+   anything can write it. Until this exists the grid shows a fixed picture; see
+   [Nothing updates yet](#nothing-updates-yet).
 5. **A collector** that populates the file on a schedule.
 6. **Overlay (C)** for the full map.
 
@@ -544,6 +638,11 @@ emulator. Each probe drove an actual interactive shell.
 | Ghostty graphics query | Replied `OK`; `TIOCGWINSZ` gave a 16x34 cell |
 | Ctrl-L, resize, scrollback with an image | Row invariants hold: command, prompt width and cursor column all preserved (9 checks) |
 | Whether the terminal re-draws the image itself | **Not established**; pyte has no image handling |
+| Cost of building a grid in Rust | 40 us for 3x3 at 4px dots; 175 us for four panels across four cells |
+| Payload with stored deflate blocks | 11841 bytes, far too fat to emit per prompt |
+| Payload with fixed-Huffman deflate | 991 bytes at 4px dots, 3551 for four panels |
+| Hand-written PNG encoder | Decodes in Pillow at three dot sizes, every dot in the right place |
+| Rows per cell at 4-point dots on 2x | 7, not 8: the 8th correctly refuses |
 | Cell size from `TIOCGWINSZ` | 1280x816 for an 80x24 tty, giving a 16x34 cell |
 | Trusted vs untrusted escape paths | A style's `ESC[0;1;32m` survives while a segment's `ESC[31m` is blanked |
 | 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, 124 byte RGBA payload |
