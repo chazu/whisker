@@ -152,6 +152,20 @@ def selftest():
     oversized, _, _, _ = build([["idle"] * 40] * 3, 3, (16, 34), 1, gap=1)
     check("oversized grid refuses instead of clipping", oversized is None)
 
+    # The capacity figures quoted in grid-design.md, each checked at the
+    # boundary so the numbers stay tight rather than merely true.
+    def fits(cols, rows, scale, cells):
+        d, _, _, _ = build([["idle"] * cols for _ in range(rows)],
+                           scale, (16, 34), cells, gap=1)
+        return d is not None
+
+    check("one cell holds 4x8 nodes at 3px, and no more",
+          fits(4, 8, 3, 1) and not fits(5, 9, 3, 1))
+    check("one cell holds 5x11 nodes at 2px, and no more",
+          fits(5, 11, 2, 1) and not fits(6, 11, 2, 1))
+    check("two cells hold 8x8 nodes at 3px, and no more",
+          fits(8, 8, 3, 2) and not fits(9, 8, 3, 2))
+
     print("failures:", failures)
     return 1 if failures else 0
 

@@ -200,6 +200,21 @@ With a 16-character command, Ctrl-A landed on column 4, exactly where the
 command begins, and Ctrl-E on column 20. Exact, where the naive `\[ \]`
 prompt was off by 12.
 
+Be clear about what that does and does not establish. pyte does not implement
+APC at all; fed a graphics escape it prints the payload as text. So what was
+verified is the *accounting rule*, that a prompt drawing N cells while
+declaring N countable columns keeps Readline exact. That the kitty protocol
+supplies those semantics via `c=`, `r=` and `C=1` is read from its
+specification, not executed here. The remaining risk is that a terminal
+implements `C=1` loosely, and the spec itself leaves cursor position undefined
+when a placement runs past the screen edge. That is the thing to check first in
+a real terminal.
+
+The cell size this depends on is real and available: `TIOCGWINSZ` returned
+1280x816 pixels for an 80x24 tty, giving exactly the 16x34 cell the probe
+assumes. Some terminals report zero there, which is the detectable case that
+selects the fallback.
+
 **It needs no relaxation of `clean`.** The other objection was that graphics
 escapes must pass through the function that strips control characters, which is
 the defence protecting the untrusted alert state file. That confused two paths.
@@ -208,6 +223,19 @@ write it. A pixel grid is not segment output: Whisker generates the bytes
 itself from its own config and its own view states, the way it already emits
 its own SGR colour codes without laundering them. The state file keeps flowing
 through `clean` and keeps being neutralised. Verified that it still is.
+
+The two paths are visible side by side in one render. A segment printing
+`ESC[31m` and a style declaring green both want to emit an escape; the first
+comes out as spaces and the second comes out intact:
+
+```
+--color never   " [31mRED [0m"                 <- segment output, blanked
+--color always  "ESC[0;1;32m [31mRED [0mESC[0m" <- Whisker's own escape, raw
+```
+
+A graphics placement belongs on the second path, alongside `paint`, which also
+runs after the row has been measured. That is why it needs no change to
+`clean`.
 
 **Size.** Measured with a real PNG encoder. At a 16x34 pixel cell, a 3x3 grid
 with three-pixel dots and one-pixel gaps is 11x11 pixels and fits in **one
@@ -466,7 +494,10 @@ emulator. Each probe drove an actual interactive shell.
 | `view next` as 2D movement | Single ring only; 2D needs a new subcommand |
 | Sixel through the real binary | Blanked by `clean`; a picture must be generated internally, not via a segment |
 | Prompt that under-reports its width | Ctrl-A put the cursor at column 0 against text at column 12 |
-| Image sized to whole cells, cursor pinned | Exact: Ctrl-A at column 4, Ctrl-E at 20 for a 16-char command |
+| Image sized to whole cells, cursor pinned | Accounting rule exact: Ctrl-A at column 4, Ctrl-E at 20 for a 16-char command |
+| `c=`/`r=`/`C=1` semantics themselves | **Read from the spec, not executed**; pyte prints APC payloads as text |
+| Cell size from `TIOCGWINSZ` | 1280x816 for an 80x24 tty, giving a 16x34 cell |
+| Trusted vs untrusted escape paths | A style's `ESC[0;1;32m` survives while a segment's `ESC[31m` is blanked |
 | 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, ~110 byte payload |
 | Node capacity of one cell | 4x8 at 3px dots, 5x11 at 2px; two cells give 8x8 |
 
