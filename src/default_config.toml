@@ -27,6 +27,18 @@ segments = ["directory", "kubernetes"]
 # [segment.directory]
 # keep_end = true    # shorten as …/deep/tail rather than head…
 # shrink = true      # may be shortened to fit the terminal width
+# style = { fg = "blue", bold = true }
+#
+# Styling is structured configuration, applied after the row is laid out, so
+# colour never affects the measured width. fg and bg take a colour name
+# (red, bright_red), a 0-255 palette index, or #rrggbb. The attributes are
+# bold, dim, italic, and underline. A view can set a style for all its
+# segments, plus label_style and separator_style:
+#
+# [view.dev]
+# style = { dim = true }
+# label_style = { fg = "green", bold = true }
+# separator_style = { fg = "bright_black" }
 #
 # A custom segment runs a local program directly, with no shell involved. Its
 # first output line is used; a failure or missing program hides the segment.

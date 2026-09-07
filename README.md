@@ -73,6 +73,36 @@ shortened to fit the width), and `keep_end` (shorten as `…/tail` rather than
 `head…`). The directory shrinks from its start by default; custom segments
 shrink from their end.
 
+### Styling
+
+Colour is structured configuration rather than text you embed, and it is applied
+after the row is laid out. Widths are therefore always measured on plain text, so
+an escape sequence is never counted as a column nor cut in half by shortening.
+
+```toml
+[view.dev]
+label = "dev "
+label_style = { fg = "green", bold = true }
+separator_style = { fg = "bright_black" }
+style = { dim = true }                      # default for this view's segments
+
+[segment.git]
+style = { fg = "red" }                      # a segment's own style wins
+```
+
+`fg` and `bg` take one of the eight colour names (`red`, `green`, `yellow`,
+`blue`, `magenta`, `cyan`, `black`, `white`), any of those with a `bright_`
+prefix, a `0`-`255` palette index, or `#rrggbb`. Named colours follow your
+terminal theme, which usually suits a prompt better than fixed values. The
+attributes are `bold`, `dim`, `italic`, and `underline`. A segment's `style`
+overrides the view's for the fields it sets; the rest are inherited.
+
+`--color` takes `auto` (default), `always`, or `never`. Whisker's output is
+captured into a shell variable rather than written to a terminal, so `auto`
+cannot detect a TTY: it honours `NO_COLOR` and `TERM=dumb` and otherwise assumes
+colour is wanted. Every styled piece resets afterwards, so nothing leaks into
+the command you type.
+
 A configuration mistake is reported rather than ignored: an unknown key, a view
 listed in `views` without a definition, or a `start` naming no view all fail
 with a specific message. `whisker config check` reports the file in use, the
@@ -103,18 +133,20 @@ To inspect the renderer alone:
 
 ```sh
 target/debug/whisker render --view dev --columns 80
-target/debug/whisker render --view ops --columns 80
+target/debug/whisker render --view ops --columns 80 --color always
+target/debug/whisker render --view ops --columns 80 --color never
 target/debug/whisker view next --current dev
 target/debug/whisker view list
 target/debug/whisker config check
 ```
 
 Known limits. Collectors are synchronous and local, so a slow Git repository or
-custom command delays a redraw; there are no timeouts. Text is emitted without
-colour: any icon or symbol works in a `label`, `prefix`, or `separator`, but
-ANSI colour does not, since control characters are stripped so metadata can
-never move the cursor. There is no daemon and no general integration with
-existing prompt hooks. The one-row repaint assumes a conventional ANSI terminal.
+custom command delays a redraw; there are no timeouts. Styling is static: it
+cannot yet depend on state, so "red when the branch is dirty" is not expressible.
+Control characters are still stripped from all collected text and from labels,
+so metadata can never move the cursor; colour arrives only through the `style`
+tables. There is no daemon and no general integration with existing prompt
+hooks. The one-row repaint assumes a conventional ANSI terminal.
 Full multi-command input (PS2), extreme resizing, and commands taller than the
 terminal need further work before daily use.
 

@@ -85,3 +85,34 @@ A first real configuration exposed one flaw: a segment's prefix was baked into
 the collected text, so shortening ate the decoration and `📁 ~/long/path` became
 `…/path` with the icon gone. Prefixes and suffixes now apply during layout,
 leaving shortening to consume only the body. A test pins this.
+
+## Static styling (2026-09-06)
+
+Styling is structured configuration, never text the user embeds, and it is
+applied after layout rather than during collection. That ordering is the whole
+design. Measuring happens on plain text, so an escape sequence can never be
+counted as a column, and shortening can never cut one in half. Control
+characters are still stripped from every collected value and label, so the
+original "metadata is data" guarantee holds: colour arrives only through a
+`style` table, which cannot express cursor movement.
+
+`fg`/`bg` accept the eight names with an optional `bright_` prefix, a 0-255
+index, or `#rrggbb`. Named colours map to 30-37 and 90-97 so they follow the
+terminal's theme. Attributes are bold, dim, italic, underline. A view sets a
+default `style` for its segments plus `label_style` and `separator_style`; a
+segment's own style overrides per field. Each painted piece opens with `0;` and
+closes with a reset, so a style cannot leak in from earlier output nor out into
+the typed command.
+
+Two cases needed care. When nothing may shrink the row is capped, which clips
+the plain text and then applies one uniform style, since clipping styled text
+could sever a sequence. And `--color` cannot autodetect: the row is captured
+into a shell variable, so a TTY check would always say no. Auto therefore
+honours `NO_COLOR` and `TERM=dumb` and otherwise assumes a terminal.
+
+Verified: 21 tests, including the invariant that stripping SGR from a styled row
+reproduces the unstyled row exactly across widths from 80 down to 3, that no row
+ends mid-escape, and that an unstyled config emits no escapes even with colour
+on. Checked externally across five views and nine widths, plus NO_COLOR,
+TERM=dumb, and unset TERM. A real pseudo-terminal showed the colours cycling
+with Alt-O while a partly typed command and its cursor survived.

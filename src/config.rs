@@ -6,6 +6,8 @@ use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 use toml::Value;
 
+use crate::style::Style;
+
 /// The default configuration, also used as the `whisker config example` output.
 pub const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
 
@@ -25,6 +27,8 @@ pub enum Source {
 #[derive(Clone, Debug)]
 pub struct Segment {
     pub source: Source,
+    /// Applied after layout, over the view's own style.
+    pub style: Style,
     pub prefix: String,
     pub suffix: String,
     /// Segments that may be shortened when the row does not fit, longest first.
@@ -37,7 +41,9 @@ pub struct Segment {
 pub struct ViewDef {
     pub name: String,
     pub label: String,
+    pub label_style: Style,
     pub separator: String,
+    pub separator_style: Style,
     pub segments: Vec<Segment>,
 }
 
@@ -141,6 +147,7 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
     let what = format!("segment.{name}");
     let mut segment = Segment {
         source: builtin(name).unwrap_or(Source::Command(Vec::new())),
+        style: Style::default(),
         prefix: String::new(),
         suffix: String::new(),
         // The directory is the one long, safely truncatable segment by default.
@@ -154,7 +161,7 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
     };
     known_keys(
         table,
-        &["command", "prefix", "suffix", "shrink", "keep_end"],
+        &["command", "prefix", "suffix", "shrink", "keep_end", "style"],
         &what,
     )?;
     if let Some(command) = table.get("command") {
@@ -186,6 +193,9 @@ fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
     }
     if let Some(value) = table.get("keep_end") {
         segment.keep_end = as_bool(value, &format!("{what}.keep_end"))?;
+    }
+    if let Some(value) = table.get("style") {
+        segment.style = Style::parse(value, &format!("{what}.style"))?;
     }
     Ok(segment)
 }
@@ -248,9 +258,32 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
             .ok_or_else(|| format!("view.{name} must be a table"))?;
         known_keys(
             table,
-            &["label", "separator", "segments"],
+            &[
+                "label",
+                "separator",
+                "segments",
+                "style",
+                "label_style",
+                "separator_style",
+            ],
             &format!("view.{name}"),
         )?;
+        let view_style = table
+            .get("style")
+            .map(|value| Style::parse(value, &format!("view.{name}.style")))
+            .transpose()?
+            .unwrap_or_default();
+        // A label with no style of its own inherits the view's.
+        let label_style = table
+            .get("label_style")
+            .map(|value| Style::parse(value, &format!("view.{name}.label_style")))
+            .transpose()?
+            .unwrap_or(view_style);
+        let separator_style = table
+            .get("separator_style")
+            .map(|value| Style::parse(value, &format!("view.{name}.separator_style")))
+            .transpose()?
+            .unwrap_or_default();
         let names: Vec<String> = table
             .get("segments")
             .ok_or_else(|| format!("view.{name} must set segments"))?
@@ -274,13 +307,19 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
                 .map(|value| as_str(value, &format!("view.{name}.separator")))
                 .transpose()?
                 .unwrap_or_else(|| "  ".into()),
+            label_style,
+            separator_style,
             segments: names
                 .iter()
-                .map(|segment_name| match segments.get(segment_name) {
-                    Some(found) => Ok(found.clone()),
-                    None => {
-                        segment(segment_name, None).map_err(|error| format!("view.{name}: {error}"))
-                    }
+                .map(|segment_name| {
+                    let mut found = match segments.get(segment_name) {
+                        Some(found) => found.clone(),
+                        None => segment(segment_name, None)
+                            .map_err(|error| format!("view.{name}: {error}"))?,
+                    };
+                    // The segment's own style wins over the view-wide default.
+                    found.style = found.style.or(view_style);
+                    Ok::<Segment, String>(found)
                 })
                 .collect::<Result<_, _>>()?,
         });

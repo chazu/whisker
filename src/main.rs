@@ -1,5 +1,6 @@
 //! Collect one information row from the configured view; Bash owns editing.
 mod config;
+mod style;
 
 use std::{
     env,
@@ -161,7 +162,7 @@ fn clip(text: &str, budget: usize, keep_end: bool) -> String {
 }
 
 /// Join the collected parts, shortening shrinkable segments to fit the width.
-fn layout(view: &ViewDef, parts: &[String], columns: usize) -> String {
+fn layout(view: &ViewDef, parts: &[String], columns: usize, color: bool) -> String {
     // Leave one column spare to avoid automatic wrapping on the info row.
     let budget = columns.saturating_sub(1);
     let label = clean(&view.label);
@@ -173,6 +174,8 @@ fn layout(view: &ViewDef, parts: &[String], columns: usize) -> String {
         let segment = &view.segments[index];
         format!("{}{body}{}", clean(&segment.prefix), clean(&segment.suffix))
     };
+    // Measured on plain text only. Style is applied once the row is final, so
+    // an escape sequence is never counted as a column nor cut by shortening.
     let joined = |parts: &[String]| {
         let visible: Vec<String> = parts
             .iter()
@@ -182,13 +185,28 @@ fn layout(view: &ViewDef, parts: &[String], columns: usize) -> String {
             .collect();
         format!("{label}{}", visible.join(&separator))
     };
+    let painted = |parts: &[String]| {
+        if !color {
+            return joined(parts);
+        }
+        let visible: Vec<String> = parts
+            .iter()
+            .enumerate()
+            .filter(|(_, body)| !body.is_empty())
+            .map(|(index, body)| view.segments[index].style.paint(&decorate(index, body)))
+            .collect();
+        format!(
+            "{}{}",
+            view.label_style.paint(&label),
+            visible.join(&view.separator_style.paint(&separator))
+        )
+    };
 
     // Shorten shrinkable segments, largest first, until the row fits.
     loop {
-        let row = joined(&parts);
-        let excess = width(&row).saturating_sub(budget);
+        let excess = width(&joined(&parts)).saturating_sub(budget);
         if excess == 0 {
-            return row;
+            return painted(&parts);
         }
         let Some(index) = view
             .segments
@@ -198,25 +216,62 @@ fn layout(view: &ViewDef, parts: &[String], columns: usize) -> String {
             .max_by_key(|(index, _)| width(&parts[*index]))
             .map(|(index, _)| index)
         else {
-            // Nothing may shrink: cap the whole row instead.
-            return clip(&row, budget, false);
+            // Nothing may shrink: cap the whole row instead. Cap the plain text
+            // and restyle, so a clip can never land inside an escape sequence.
+            return capped(view, &parts, budget, color);
         };
         let target = width(&parts[index]).saturating_sub(excess).max(1);
         let shortened = clip(&parts[index], target, view.segments[index].keep_end);
         if shortened == parts[index] {
-            return clip(&row, budget, false);
+            return capped(view, &parts, budget, color);
         }
         parts[index] = shortened;
     }
 }
 
-fn render(config: &Config, view: &str, columns: usize) -> Result<String, String> {
-    let view = config.view(view)?;
-    let parts: Vec<String> = view.segments.iter().map(collect).collect();
-    Ok(layout(view, &parts, columns))
+/// Last resort when nothing may shrink: clip the whole plain row. Any style is
+/// dropped rather than risk cutting an escape sequence in half.
+fn capped(view: &ViewDef, parts: &[String], budget: usize, color: bool) -> String {
+    let label = clean(&view.label);
+    let separator = clean(&view.separator);
+    let visible: Vec<String> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| !body.is_empty())
+        .map(|(index, body)| {
+            let segment = &view.segments[index];
+            format!("{}{body}{}", clean(&segment.prefix), clean(&segment.suffix))
+        })
+        .collect();
+    let row = clip(
+        &format!("{label}{}", visible.join(&separator)),
+        budget,
+        false,
+    );
+    if color {
+        // One uniform style keeps the escape sequences whole.
+        return view.label_style.paint(&row);
+    }
+    row
 }
 
-const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N]\n  whisker view next --current NAME\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nRun ./try-it for the interactive Bash experiment.";
+fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<String, String> {
+    let view = config.view(view)?;
+    let parts: Vec<String> = view.segments.iter().map(collect).collect();
+    Ok(layout(view, &parts, columns, color))
+}
+
+const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
+
+/// Whisker's output is captured into a shell variable and printed later, so a
+/// TTY check here would always say "not a terminal". Auto therefore honours the
+/// usual opt-outs and otherwise assumes the row reaches a terminal.
+fn color_auto() -> bool {
+    if env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    !matches!(env::var("TERM").as_deref(), Ok("dumb") | Ok(""))
+}
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -287,6 +342,7 @@ fn run() -> Result<(), String> {
 
     let mut view = config.start.clone();
     let mut columns = 80;
+    let mut color = color_auto();
     let mut options = args[1..].iter();
     while let Some(option) = options.next() {
         let value = options
@@ -300,10 +356,18 @@ fn run() -> Result<(), String> {
                     .map_err(|_| "columns must be an integer")?
                     .clamp(1, 16384)
             }
+            "--color" | "--colour" => {
+                color = match value.as_str() {
+                    "always" => true,
+                    "never" => false,
+                    "auto" => color_auto(),
+                    _ => return Err(format!("color must be auto, always, or never, not {value}")),
+                }
+            }
             _ => return Err(format!("unknown option: {option}")),
         }
     }
-    println!("{}", render(&config, &view, columns)?);
+    println!("{}", render(&config, &view, columns, color)?);
     Ok(())
 }
 
@@ -341,14 +405,15 @@ mod tests {
     fn default_views_lay_out_like_the_original() {
         let config = defaults();
         assert_eq!(
-            layout(&view(&config, "minimal"), &["~/dev".into()], 80),
+            layout(&view(&config, "minimal"), &["~/dev".into()], 80, false),
             "~/dev"
         );
         assert_eq!(
             layout(
                 &view(&config, "dev"),
                 &["~/dev".into(), "git:main*".into()],
-                80
+                80,
+                false,
             ),
             "[dev] ~/dev  git:main*"
         );
@@ -356,7 +421,8 @@ mod tests {
             layout(
                 &view(&config, "ops"),
                 &["~/dev".into(), "⎈ staging:payments".into()],
-                80
+                80,
+                false,
             ),
             "[ops] ~/dev  ⎈ staging:payments"
         );
@@ -366,7 +432,12 @@ mod tests {
     fn an_empty_segment_takes_no_separator() {
         let config = defaults();
         assert_eq!(
-            layout(&view(&config, "dev"), &["~/dev".into(), String::new()], 80),
+            layout(
+                &view(&config, "dev"),
+                &["~/dev".into(), String::new()],
+                80,
+                false
+            ),
             "[dev] ~/dev"
         );
     }
@@ -381,6 +452,7 @@ mod tests {
                 "git:main*".into(),
             ],
             30,
+            false,
         );
         assert!(width(&row) <= 29, "row {row:?} exceeds the budget");
         assert!(row.ends_with("git:main*"), "detail lost in {row:?}");
@@ -405,6 +477,7 @@ suffix = " <"
             &view(&config, "a"),
             &["~/a/very/long/path/to/somewhere/deep".into()],
             20,
+            false,
         );
         assert!(width(&row) <= 19, "row {row:?} exceeds the budget");
         assert!(row.starts_with("> …"), "prefix lost in {row:?}");
@@ -418,6 +491,7 @@ suffix = " <"
             &view(&config, "dev"),
             &["~/somewhere".into(), "git:a-very-long-branch-name".into()],
             12,
+            false,
         );
         assert!(width(&row) <= 11, "row {row:?} exceeds the budget");
     }
@@ -429,6 +503,7 @@ suffix = " <"
             &view(&config, "dev"),
             &["~/dev".into(), "git:ma\nin\u{1b}[31m".into()],
             80,
+            false,
         );
         assert!(!row.contains('\n') && !row.contains('\u{1b}'), "{row:?}");
     }
@@ -452,7 +527,7 @@ prefix = "aws:"
         assert_eq!(config.start, "cloud");
         assert_eq!(config.next("cloud").unwrap(), "cloud");
         assert_eq!(
-            render(&config, "cloud", 200).unwrap(),
+            render(&config, "cloud", 200, false).unwrap(),
             format!("» {} | aws:us-east-1", directory())
         );
     }
@@ -471,7 +546,125 @@ prefix = "!"
             None,
         )
         .unwrap();
-        assert_eq!(render(&config, "x", 200).unwrap(), directory());
+        assert_eq!(render(&config, "x", 200, false).unwrap(), directory());
+    }
+
+    /// Strip SGR sequences, so a styled row can be compared against a plain one.
+    fn strip(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                for next in chars.by_ref() {
+                    if next == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    fn styled() -> Config {
+        config::parse(
+            r#"
+views = ["a"]
+[view.a]
+label = "L "
+label_style = { fg = "blue", bold = true }
+segments = ["directory", "git"]
+style = { dim = true }
+[segment.git]
+style = { fg = "red" }
+prefix = "@"
+"#,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn style_never_changes_the_laid_out_text() {
+        let config = styled();
+        let parts = ["~/dev".to_string(), "main".to_string()];
+        for columns in [80, 40, 20, 14, 8, 3] {
+            let plain = layout(&view(&config, "a"), &parts, columns, false);
+            let color = layout(&view(&config, "a"), &parts, columns, true);
+            assert_eq!(
+                strip(&color),
+                plain,
+                "colour changed the text at {columns} columns"
+            );
+            assert!(
+                width(&plain) <= columns.saturating_sub(1),
+                "row {plain:?} exceeds {columns} columns"
+            );
+        }
+    }
+
+    #[test]
+    fn a_styled_row_never_ends_mid_escape() {
+        let config = styled();
+        let parts = [
+            "~/a/very/long/path/to/somewhere/deep".to_string(),
+            "main".to_string(),
+        ];
+        for columns in [80, 40, 24, 16, 10, 6, 4, 2] {
+            let row = layout(&view(&config, "a"), &parts, columns, true);
+            let escapes = row.matches('\u{1b}').count();
+            let terminators = row.matches('m').count();
+            assert!(
+                escapes <= terminators,
+                "unterminated escape at {columns} columns in {row:?}"
+            );
+            if row.contains('\u{1b}') {
+                assert!(
+                    row.ends_with("\u{1b}[0m"),
+                    "style leaks at {columns}: {row:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_segment_style_beats_the_view_style_and_decoration_is_styled() {
+        let config = styled();
+        let row = layout(
+            &view(&config, "a"),
+            &["~/dev".into(), "main".into()],
+            80,
+            true,
+        );
+        // The label is blue+bold, the directory inherits dim, git is red+dim.
+        assert!(row.starts_with("\u{1b}[0;1;34mL \u{1b}[0m"), "{row:?}");
+        assert!(row.contains("\u{1b}[0;2;31m@main\u{1b}[0m"), "{row:?}");
+        assert!(row.contains("\u{1b}[0;2m~/dev\u{1b}[0m"), "{row:?}");
+    }
+
+    #[test]
+    fn colour_is_absent_without_styles_or_when_disabled() {
+        let plain = defaults();
+        let row = layout(
+            &view(&plain, "dev"),
+            &["~/dev".into(), "git:main".into()],
+            80,
+            true,
+        );
+        assert!(
+            !row.contains('\u{1b}'),
+            "unstyled config emitted colour: {row:?}"
+        );
+
+        let config = styled();
+        let off = layout(
+            &view(&config, "a"),
+            &["~/dev".into(), "main".into()],
+            80,
+            false,
+        );
+        assert!(!off.contains('\u{1b}'), "colour emitted when off: {off:?}");
     }
 
     #[test]
@@ -505,6 +698,14 @@ prefix = "!"
                 "built in",
             ),
             ("views = [\"a\"] [", "TOML"),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"git\"]\nstyle = { fg = \"puce\" }",
+                "unknown colour",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"git\"]\n[segment.git]\nstyle = { glow = true }",
+                "unknown style key",
+            ),
         ];
         for (text, expected) in cases {
             let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
