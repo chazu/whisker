@@ -167,4 +167,6 @@ Beyond `cargo test`, [`checks/`](checks/README.md) drives the prompt through a
 real pseudo-terminal and screen emulator to confirm that a styled row occupies
 the columns it claims and that editing survives view switches and resizing.
 
-See [NOTES.md](NOTES.md) for the development observations.
+See [NOTES.md](NOTES.md) for the development observations, and
+[docs/grid-design.md](docs/grid-design.md) for a proposal, not yet built, to
+arrange views on a navigable 2D grid with alert markers.
