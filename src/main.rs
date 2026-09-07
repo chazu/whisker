@@ -326,6 +326,7 @@ fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<St
     // them. Where the terminal cannot draw, the segment stays empty and
     // disappears along with its separator, which is the text fallback.
     let mut placement = String::new();
+    let mut cells_reserved = 0;
     if let Some(index) = view
         .segments
         .iter()
@@ -354,13 +355,41 @@ fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<St
                 pixels::placement(config, name, cell, cells, segment.dot, segment.gap, dpr)
             {
                 placement = escape;
-                parts[index] = " ".repeat(cells);
+                // A no-break space marks the reservation so it can be found
+                // again in the finished row: an ordinary space is
+                // indistinguishable from a separator, and this one must not be
+                // confused with anything else. It is replaced with real spaces
+                // once the row is final.
+                parts[index] = "\u{a0}".repeat(cells);
+                cells_reserved = cells;
             }
         }
     }
 
     let row = layout(view, &parts, columns, color);
-    Ok(format!("{placement}{row}"))
+
+    // Layout may have dropped the reservation, or `capped` may have clipped it
+    // off the end of the row. The grid is `atomic`, so on a narrow row it gives
+    // up its cells rather than show a partial picture; emitting the placement
+    // anyway would draw the image over text that is not expecting it and leave
+    // the prompt's declared width wrong. The escape and the spaces travel
+    // together or not at all.
+    if !placement.is_empty() && !reserved_cells_survived(&row, cells_reserved) {
+        placement.clear();
+    }
+
+    // The markers have done their job; the terminal should see ordinary
+    // spaces under the image.
+    Ok(format!("{placement}{}", row.replace('\u{a0}', " ")))
+}
+
+/// Are the grid's reserved cells still in the finished row?
+///
+/// Counting the markers in the finished text is the only reliable answer,
+/// because the reservation can be lost two ways: dropped whole when the
+/// segment gives up, or clipped off the end when the entire row is capped.
+fn reserved_cells_survived(row: &str, cells: usize) -> bool {
+    cells > 0 && row.chars().filter(|ch| *ch == '\u{a0}').count() == cells
 }
 
 /// Run every node's check and write the results to the state file.
@@ -1481,5 +1510,21 @@ at = ["b", "three"]
                 "{text:?} gave {error:?}, wanted {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_grid_escape_and_its_reserved_cells_travel_together() {
+        // Found by the boundaries probe: the grid is atomic, so a narrow row
+        // gives up its cells, but the placement escape was still emitted. The
+        // image would then be drawn over text that had not reserved space for
+        // it, and the prompt's declared width would be wrong.
+        assert!(!reserved_cells_survived("no markers here", 1));
+        assert!(reserved_cells_survived("label \u{a0} rest", 1));
+        // Only an exact match counts: fewer means the row was clipped, more
+        // would mean the marker escaped into somebody else's text.
+        assert!(!reserved_cells_survived("label \u{a0} rest", 2));
+        assert!(reserved_cells_survived("label \u{a0}\u{a0} rest", 2));
+        // Reserving nothing is not a reservation.
+        assert!(!reserved_cells_survived("\u{a0}", 0));
     }
 }

@@ -71,3 +71,10 @@ Two worth rerunning if you doubt the document:
   an unclaimed cell not drawn at all. It also covers the two fallback paths, a
   terminal with no cell size and one reporting zeroes, where the segment must
   vanish rather than guess.
+- `boundaries.py` tests the grid segment where it meets everything else:
+  styling, `NO_COLOR`, an `atomic` text segment competing for the same row,
+  `collect` feeding `render`, `view move`, and a configuration with no grid at
+  all. Boundaries are where the interesting failures live, and this one earned
+  its place immediately: on a row too narrow for the grid, the reservation was
+  dropped while the placement escape was still emitted, so the image would have
+  been drawn over text that had not made room for it.

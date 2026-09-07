@@ -10,6 +10,13 @@ with; `docs/probes/gridsegment.py` checks the shipped feature.
 
 What is not built is the *interaction*: binding keys to `view move`, the
 alternate-screen overlay of design C, and a `changed` alert rule.
+
+One failure worth recording, because it is the same shape as the truncation
+flaw that shaped this whole document. The image and the spaces that reserve its
+cells are two halves of one claim about width. A narrow row dropped the spaces,
+since the grid is `atomic`, while the placement escape was still emitted: the
+picture would have been drawn over text that had not made room for it. They now
+travel together or not at all, checked by `docs/probes/boundaries.py`.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
