@@ -150,4 +150,8 @@ hooks. The one-row repaint assumes a conventional ANSI terminal.
 Full multi-command input (PS2), extreme resizing, and commands taller than the
 terminal need further work before daily use.
 
+Beyond `cargo test`, [`checks/`](checks/README.md) drives the prompt through a
+real pseudo-terminal and screen emulator to confirm that a styled row occupies
+the columns it claims and that editing survives view switches and resizing.
+
 See [NOTES.md](NOTES.md) for the development observations.

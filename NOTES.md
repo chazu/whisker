@@ -116,3 +116,18 @@ ends mid-escape, and that an unstyled config emits no escapes even with colour
 on. Checked externally across five views and nine widths, plus NO_COLOR,
 TERM=dumb, and unset TERM. A real pseudo-terminal showed the colours cycling
 with Alt-O while a partly typed command and its cursor survived.
+
+The styling claims were then checked against a terminal rather than against
+strings, since only the terminal interprets the escape sequences. `checks/`
+renders every view at nine widths onto a screen emulator and asserts that the
+visible characters, the column count, and the one-row height are identical with
+colour on and off, and that no style is still active where the user types. It
+also drives `./try-it` through a pseudo-terminal to cycle views with a partly
+typed command, and narrows the terminal mid-session.
+
+Two findings. The emulator, not Whisker, drops the rest of a line after a U+FE0F
+variation selector, identically with colour on or off; the checks strip it and
+say so. And the checks earn their keep: reordering the code to style before
+measuring, so escapes are counted as columns, makes both `checks/screen.py` and
+the `style_never_changes_the_laid_out_text` test fail, which was confirmed by
+deliberately introducing that regression and then reverting it.
