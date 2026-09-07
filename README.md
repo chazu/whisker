@@ -1,10 +1,12 @@
-# Whisker — proof of concept
+# Whisker
 
-Can a small Rust renderer provide a two-line Bash prompt whose information row
-changes immediately with Alt-O, preserving the command being edited and its
-cursor? This is a disposable experiment to answer that question.
+A two-line Bash prompt whose information row switches instantly with Alt-O,
+preserving the command being edited and its cursor. A small Rust renderer emits
+the row; Bash owns the editing session. Views are configurable.
 
-Run from this directory:
+It began as a proof of concept; see [NOTES.md](NOTES.md) for how it developed.
+
+Build and run from this directory:
 
 ```sh
 ./try-it
@@ -74,9 +76,9 @@ shrink from their end.
 A configuration mistake is reported rather than ignored: an unknown key, a view
 listed in `views` without a definition, or a `start` naming no view all fail
 with a specific message. `whisker config check` reports the file in use, the
-view cycle, and the start view. If the file is broken, the shell prints the
-error once at startup and falls back to a plain prompt rather than failing on
-every redraw.
+view cycle, and the start view, and `whisker config path` prints where it looks.
+If the file is broken, the shell prints the error once at startup and falls back
+to a plain prompt rather than failing on every redraw.
 
 The second line is always `` `-=> ``. Git information is omitted outside a repo;
 detached HEAD shows a short commit ID. Kubernetes uses `kubectl config view
@@ -86,8 +88,8 @@ shows `⎈ unavailable`. It does not query the cluster.
 
 Rust reads the configuration, collects each segment of the selected view, and
 emits a plain text information row, shortening the longest shrinkable segment
-first to keep the row within the terminal width. Bash prints that row from its prompt hook;
-PS1 itself is the stable input marker. This avoids Readline caching an obsolete
+first to keep the row within the terminal width. Bash prints that row from its
+prompt hook; PS1 itself is the stable input marker. This avoids Readline caching an obsolete
 information row. Bash stores the selected view in memory and refreshes before
 each prompt and on Alt-O. The inputrc macro forwards Alt-O to a private sequence
 connected to a Bash function with `bind -x`. Ctrl-L repaints both rows. The first
@@ -107,11 +109,13 @@ target/debug/whisker view list
 target/debug/whisker config check
 ```
 
-Styling is plain and collectors are synchronous and local, so a slow Git
-repository or custom command can delay a redraw; there are no timeouts. There is
-no daemon, no colour or icon configuration, and no general integration with
-existing prompt hooks. The one-row repaint assumes
-a conventional ANSI terminal. Full multi-command input (PS2), extreme resizing,
-and commands taller than the terminal need further work before daily use.
+Known limits. Collectors are synchronous and local, so a slow Git repository or
+custom command delays a redraw; there are no timeouts. Text is emitted without
+colour: any icon or symbol works in a `label`, `prefix`, or `separator`, but
+ANSI colour does not, since control characters are stripped so metadata can
+never move the cursor. There is no daemon and no general integration with
+existing prompt hooks. The one-row repaint assumes a conventional ANSI terminal.
+Full multi-command input (PS2), extreme resizing, and commands taller than the
+terminal need further work before daily use.
 
-See [NOTES.md](NOTES.md) for the experiment's observations.
+See [NOTES.md](NOTES.md) for the development observations.
