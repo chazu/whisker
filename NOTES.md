@@ -49,3 +49,34 @@ the initial interaction. This does not establish complete coverage of completion
 history navigation, or terminal behavior. General prompt-hook composition, PS2
 editing, and input taller than the screen remain outside this experiment. The
 working approach is ready to inform the next iteration of the utility.
+
+## Configurable views (2026-09-06)
+
+The prototype's `View` enum, its fixed cycle, and its hard-coded `layout` were
+replaced by a TOML configuration read from `$WHISKER_CONFIG`, else
+`$XDG_CONFIG_HOME/whisker/config.toml`, else `~/.config/whisker/config.toml`.
+The built-in defaults are the prototype's own three views, so an existing setup
+is unchanged and no file is required.
+
+Views became a list of named segments with a label and separator. Segments are
+`directory`, `git`, `kubernetes`, or a user `command` given as argv and run
+directly, never through a shell, keeping the original guarantee that metadata is
+data. An empty or failing segment drops its separator too, so an absent tool
+leaves no gap. Shrinking generalised from "shorten the directory" to "shorten
+the longest shrinkable segment until the row fits", which preserves the previous
+behaviour for the default views.
+
+A file that exists but does not parse is an error rather than a silent fallback,
+so a typo is visible. The shell reports it once at startup and continues with a
+plain prompt instead of failing on every redraw. `whisker config check` names
+the file in use, the cycle, and the start view; `view start` and `view list` let
+the shell layer stop hard-coding `dev` and the banner's view names.
+
+Verified: nine unit tests cover the default cycle and layout, empty segments,
+shrinking priority, narrow-terminal capping, control-character stripping, a
+custom view with a custom command segment, a failing command segment, and ten
+configuration mistakes. Cargo build, formatting, Clippy with warnings denied,
+and `bash -n` pass. In a real pseudo-terminal, `./try-it` cycled the default
+views and a custom two-view config with a custom `hostname` segment while
+preserving partly typed input, and a deliberately broken config produced one
+error and a working plain shell.

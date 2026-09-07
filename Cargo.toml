@@ -6,4 +6,5 @@ publish = false
 description = "Proof of concept for a switchable two-line Bash prompt"
 
 [dependencies]
+toml = { version = "1.1.5", default-features = false, features = ["parse", "serde"] }
 unicode-width = "0.2.2"

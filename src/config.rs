@@ -1,0 +1,304 @@
+//! User configuration: which views exist, and what each one shows.
+//!
+//! Without a configuration file Whisker uses built-in defaults that match the
+//! original prototype exactly, so an existing setup keeps working untouched.
+use std::{collections::BTreeMap, env, fs, path::PathBuf};
+
+use toml::Value;
+
+/// The default configuration, also used as the `whisker config example` output.
+pub const DEFAULT_CONFIG: &str = include_str!("default_config.toml");
+
+/// Where a segment's text comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// Current directory, abbreviating the home directory to `~`.
+    Directory,
+    /// Branch and dirty marker, empty outside a repository.
+    Git,
+    /// Selected kubectl context and namespace.
+    Kubernetes,
+    /// A user-defined local command; argv, never a shell string.
+    Command(Vec<String>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Segment {
+    pub source: Source,
+    pub prefix: String,
+    pub suffix: String,
+    /// Segments that may be shortened when the row does not fit, longest first.
+    pub shrink: bool,
+    /// Shorten by dropping the beginning (`…/deep/tail`) rather than the end.
+    pub keep_end: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewDef {
+    pub name: String,
+    pub label: String,
+    pub separator: String,
+    pub segments: Vec<Segment>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub views: Vec<ViewDef>,
+    pub start: String,
+    /// The file the configuration came from, or None for built-in defaults.
+    pub origin: Option<PathBuf>,
+}
+
+impl Config {
+    pub fn view(&self, name: &str) -> Result<&ViewDef, String> {
+        self.views
+            .iter()
+            .find(|view| view.name == name)
+            .ok_or_else(|| format!("unknown view: {name}; use {}", self.view_names()))
+    }
+
+    pub fn view_names(&self) -> String {
+        self.views
+            .iter()
+            .map(|view| view.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// The next view in the configured cycle, wrapping at the end.
+    pub fn next(&self, current: &str) -> Result<&str, String> {
+        let index = self
+            .views
+            .iter()
+            .position(|view| view.name == current)
+            .ok_or_else(|| format!("unknown view: {current}; use {}", self.view_names()))?;
+        Ok(&self.views[(index + 1) % self.views.len()].name)
+    }
+}
+
+/// The configuration file path: `$WHISKER_CONFIG`, else
+/// `$XDG_CONFIG_HOME/whisker/config.toml`, else `~/.config/whisker/config.toml`.
+pub fn path() -> Option<PathBuf> {
+    if let Some(explicit) = env::var_os("WHISKER_CONFIG") {
+        return Some(PathBuf::from(explicit));
+    }
+    let base = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(base.join("whisker").join("config.toml"))
+}
+
+/// Load the user's configuration, falling back to the built-in defaults when no
+/// file exists. A file that exists but cannot be read or parsed is an error, so
+/// a typo is reported rather than silently ignored.
+pub fn load() -> Result<Config, String> {
+    let Some(file) = path() else {
+        return parse(DEFAULT_CONFIG, None);
+    };
+    match fs::read_to_string(&file) {
+        Ok(text) => parse(&text, Some(file)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => parse(DEFAULT_CONFIG, None),
+        Err(error) => Err(format!("cannot read {}: {error}", file.display())),
+    }
+}
+
+fn as_str(value: &Value, what: &str) -> Result<String, String> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{what} must be a string"))
+}
+
+fn as_bool(value: &Value, what: &str) -> Result<bool, String> {
+    value
+        .as_bool()
+        .ok_or_else(|| format!("{what} must be true or false"))
+}
+
+fn known_keys(table: &toml::Table, allowed: &[&str], what: &str) -> Result<(), String> {
+    for key in table.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!(
+                "unknown key {key} in {what}; use {}",
+                allowed.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn builtin(name: &str) -> Option<Source> {
+    match name {
+        "directory" => Some(Source::Directory),
+        "git" => Some(Source::Git),
+        "kubernetes" => Some(Source::Kubernetes),
+        _ => None,
+    }
+}
+
+fn segment(name: &str, table: Option<&toml::Table>) -> Result<Segment, String> {
+    let what = format!("segment.{name}");
+    let mut segment = Segment {
+        source: builtin(name).unwrap_or(Source::Command(Vec::new())),
+        prefix: String::new(),
+        suffix: String::new(),
+        // The directory is the one long, safely truncatable segment by default.
+        shrink: name == "directory",
+        keep_end: name == "directory",
+    };
+    let Some(table) = table else {
+        return builtin(name)
+            .map(|_| segment)
+            .ok_or_else(|| format!("unknown segment: {name}; define [segment.{name}] first"));
+    };
+    known_keys(
+        table,
+        &["command", "prefix", "suffix", "shrink", "keep_end"],
+        &what,
+    )?;
+    if let Some(command) = table.get("command") {
+        if builtin(name).is_some() {
+            return Err(format!("{what} is built in and cannot set command"));
+        }
+        let argv = command
+            .as_array()
+            .ok_or_else(|| format!("{what}.command must be an array of strings"))?
+            .iter()
+            .map(|item| as_str(item, &format!("{what}.command entry")))
+            .collect::<Result<Vec<_>, _>>()?;
+        if argv.is_empty() {
+            return Err(format!("{what}.command must name a program"));
+        }
+        segment.shrink = true;
+        segment.source = Source::Command(argv);
+    } else if builtin(name).is_none() {
+        return Err(format!("{what} must set command"));
+    }
+    if let Some(value) = table.get("prefix") {
+        segment.prefix = as_str(value, &format!("{what}.prefix"))?;
+    }
+    if let Some(value) = table.get("suffix") {
+        segment.suffix = as_str(value, &format!("{what}.suffix"))?;
+    }
+    if let Some(value) = table.get("shrink") {
+        segment.shrink = as_bool(value, &format!("{what}.shrink"))?;
+    }
+    if let Some(value) = table.get("keep_end") {
+        segment.keep_end = as_bool(value, &format!("{what}.keep_end"))?;
+    }
+    Ok(segment)
+}
+
+pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
+    let root: toml::Table = text.parse().map_err(|error| format!("{error}"))?;
+    known_keys(
+        &root,
+        &["views", "start", "view", "segment"],
+        "configuration",
+    )?;
+
+    let mut segments: BTreeMap<String, Segment> = BTreeMap::new();
+    if let Some(defined) = root.get("segment") {
+        let defined = defined
+            .as_table()
+            .ok_or("segment must be a table of [segment.name] entries")?;
+        for (name, value) in defined {
+            let table = value
+                .as_table()
+                .ok_or_else(|| format!("segment.{name} must be a table"))?;
+            segments.insert(name.clone(), segment(name, Some(table))?);
+        }
+    }
+
+    let defined_views = root
+        .get("view")
+        .map(|value| {
+            value
+                .as_table()
+                .ok_or("view must be a table of [view.name] entries")
+        })
+        .transpose()?;
+
+    let order: Vec<String> = match root.get("views") {
+        Some(value) => value
+            .as_array()
+            .ok_or("views must be an array of view names")?
+            .iter()
+            .map(|item| as_str(item, "views entry"))
+            .collect::<Result<_, _>>()?,
+        // Without an explicit cycle, use the defined views in file order.
+        None => defined_views
+            .map(|table| table.keys().cloned().collect())
+            .unwrap_or_default(),
+    };
+    if order.is_empty() {
+        return Err("configure at least one view".into());
+    }
+
+    let mut views = Vec::new();
+    for name in &order {
+        if views.iter().any(|view: &ViewDef| &view.name == name) {
+            return Err(format!("view {name} is listed twice in views"));
+        }
+        let table = defined_views
+            .and_then(|table| table.get(name))
+            .ok_or_else(|| format!("views lists {name} but [view.{name}] is missing"))?
+            .as_table()
+            .ok_or_else(|| format!("view.{name} must be a table"))?;
+        known_keys(
+            table,
+            &["label", "separator", "segments"],
+            &format!("view.{name}"),
+        )?;
+        let names: Vec<String> = table
+            .get("segments")
+            .ok_or_else(|| format!("view.{name} must set segments"))?
+            .as_array()
+            .ok_or_else(|| format!("view.{name}.segments must be an array of segment names"))?
+            .iter()
+            .map(|item| as_str(item, &format!("view.{name}.segments entry")))
+            .collect::<Result<_, _>>()?;
+        if names.is_empty() {
+            return Err(format!("view.{name}.segments must name a segment"));
+        }
+        views.push(ViewDef {
+            name: name.clone(),
+            label: table
+                .get("label")
+                .map(|value| as_str(value, &format!("view.{name}.label")))
+                .transpose()?
+                .unwrap_or_default(),
+            separator: table
+                .get("separator")
+                .map(|value| as_str(value, &format!("view.{name}.separator")))
+                .transpose()?
+                .unwrap_or_else(|| "  ".into()),
+            segments: names
+                .iter()
+                .map(|segment_name| match segments.get(segment_name) {
+                    Some(found) => Ok(found.clone()),
+                    None => {
+                        segment(segment_name, None).map_err(|error| format!("view.{name}: {error}"))
+                    }
+                })
+                .collect::<Result<_, _>>()?,
+        });
+    }
+
+    let start = match root.get("start") {
+        Some(value) => as_str(value, "start")?,
+        None => views[0].name.clone(),
+    };
+    if !views.iter().any(|view| view.name == start) {
+        return Err(format!(
+            "start names {start}, which is not a configured view"
+        ));
+    }
+
+    Ok(Config {
+        views,
+        start,
+        origin,
+    })
+}

@@ -1,0 +1,41 @@
+# Whisker configuration.
+#
+# Copy to ~/.config/whisker/config.toml and edit. Without this file Whisker
+# uses exactly these defaults. Point WHISKER_CONFIG at another path to override
+# the location.
+
+# The Alt-O cycle, in order. The last view wraps back to the first.
+views = ["dev", "ops", "minimal"]
+
+# The view each new shell starts in. Defaults to the first view above.
+start = "dev"
+
+[view.minimal]
+segments = ["directory"]
+
+[view.dev]
+label = "[dev] "
+segments = ["directory", "git"]
+
+[view.ops]
+label = "[ops] "
+segments = ["directory", "kubernetes"]
+
+# Segments only need a [segment.name] entry to customise them, or to define a
+# new one. Built-in sources: directory, git, kubernetes.
+#
+# [segment.directory]
+# keep_end = true    # shorten as …/deep/tail rather than head…
+# shrink = true      # may be shortened to fit the terminal width
+#
+# A custom segment runs a local program directly, with no shell involved. Its
+# first output line is used; a failure or missing program hides the segment.
+#
+# [segment.aws]
+# command = ["aws", "configure", "get", "region"]
+# prefix = "aws:"
+#
+# [view.cloud]
+# label = "[cloud] "
+# separator = "  "
+# segments = ["directory", "aws"]

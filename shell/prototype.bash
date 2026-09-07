@@ -13,7 +13,13 @@ if [[ ! -x $_whisker_bin ]]; then
 fi
 
 # These variables belong to this shell, not a shared state file.
-_whisker_view=dev
+# The configuration decides which view a new shell starts in. Report a broken
+# configuration once, here, rather than on every prompt.
+if ! _whisker_view=$("$_whisker_bin" view start 2>&1); then
+    printf 'Whisker configuration error: %s\n' "$_whisker_view" >&2
+    printf 'Check it with: %s config check\n' "$_whisker_bin" >&2
+    return 1
+fi
 _whisker_header=
 _whisker_columns=${COLUMNS:-80}
 # The visible prompt has two rows. Emit the info row in the prompt hook, and
@@ -69,4 +75,7 @@ PROMPT_COMMAND=_whisker_prompt
 bind -x '"\e[99~":_whisker_next'
 bind -x '"\e[98~":_whisker_clear'
 bind -f "$_whisker_root/shell/prototype.inputrc"
-printf 'Whisker prototype: Alt-O cycles dev → ops → minimal. Type exit to leave.\n'
+# Announce the configured cycle rather than a fixed list of view names.
+_whisker_cycle=$("$_whisker_bin" view list | paste -sd' ' - | sed 's/ / → /g')
+printf 'Whisker: Alt-O cycles %s. Type exit to leave.\n' "$_whisker_cycle"
+unset _whisker_cycle

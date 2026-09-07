@@ -1,4 +1,6 @@
-//! PROTOTYPE: collect one information row; Bash owns the editing session.
+//! Collect one information row from the configured view; Bash owns editing.
+mod config;
+
 use std::{
     env,
     path::Path,
@@ -6,31 +8,7 @@ use std::{
 };
 use unicode_width::UnicodeWidthChar;
 
-#[derive(Clone, Copy)]
-enum View {
-    Minimal,
-    Dev,
-    Ops,
-}
-
-impl View {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "minimal" => Ok(Self::Minimal),
-            "dev" => Ok(Self::Dev),
-            "ops" => Ok(Self::Ops),
-            _ => Err(format!("unknown view: {value}; use minimal, dev, or ops")),
-        }
-    }
-
-    fn next(self) -> &'static str {
-        match self {
-            Self::Minimal => "dev",
-            Self::Dev => "ops",
-            Self::Ops => "minimal",
-        }
-    }
-}
+use config::{Config, Segment, Source, ViewDef};
 
 // These are local metadata commands. No shell evaluation or cluster API calls.
 fn output(program: &str, args: &[&str]) -> Option<String> {
@@ -121,6 +99,29 @@ fn kubernetes() -> String {
     format!("⎈ {context}:{namespace}")
 }
 
+/// A user-defined segment: run the program directly with no shell, and use its
+/// first output line. A missing program or failure hides the segment.
+fn custom(argv: &[String]) -> String {
+    let args: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
+    output(&argv[0], &args)
+        .and_then(|text| text.lines().next().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+fn collect(segment: &Segment) -> String {
+    let body = match &segment.source {
+        Source::Directory => directory(),
+        Source::Git => git().unwrap_or_default(),
+        Source::Kubernetes => kubernetes(),
+        Source::Command(argv) => custom(argv),
+    };
+    // An empty segment disappears entirely, prefix and suffix included.
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("{}{body}{}", segment.prefix, segment.suffix)
+}
+
 // Plain text only. Prevent metadata from inserting terminal controls or rows.
 fn clean(text: &str) -> String {
     text.chars()
@@ -162,46 +163,126 @@ fn clip(text: &str, budget: usize, keep_end: bool) -> String {
     }
 }
 
-fn layout(view: View, directory: &str, detail: &str, columns: usize) -> String {
+/// Join the collected parts, shortening shrinkable segments to fit the width.
+fn layout(view: &ViewDef, parts: &[String], columns: usize) -> String {
     // Leave one column spare to avoid automatic wrapping on the info row.
     let budget = columns.saturating_sub(1);
-    let path = clean(directory);
-    if matches!(view, View::Minimal) {
-        return clip(&path, budget, true);
+    let label = clean(&view.label);
+    let separator = clean(&view.separator);
+    let mut parts: Vec<String> = parts.iter().map(|part| clean(part)).collect();
+
+    let joined = |parts: &[String]| {
+        let visible: Vec<&str> = parts
+            .iter()
+            .filter(|part| !part.is_empty())
+            .map(String::as_str)
+            .collect();
+        format!("{label}{}", visible.join(&separator))
+    };
+
+    // Shorten shrinkable segments, largest first, until the row fits.
+    loop {
+        let row = joined(&parts);
+        let excess = width(&row).saturating_sub(budget);
+        if excess == 0 {
+            return row;
+        }
+        let Some(index) = view
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(index, segment)| segment.shrink && !parts[*index].is_empty())
+            .max_by_key(|(index, _)| width(&parts[*index]))
+            .map(|(index, _)| index)
+        else {
+            // Nothing may shrink: cap the whole row instead.
+            return clip(&row, budget, false);
+        };
+        let target = width(&parts[index]).saturating_sub(excess).max(1);
+        let shortened = clip(&parts[index], target, view.segments[index].keep_end);
+        if shortened == parts[index] {
+            return clip(&row, budget, false);
+        }
+        parts[index] = shortened;
     }
-    let label = if matches!(view, View::Dev) {
-        "[dev] "
-    } else {
-        "[ops] "
-    };
-    let detail = clean(detail);
-    let suffix = if detail.is_empty() {
-        String::new()
-    } else {
-        format!("  {detail}")
-    };
-    let available = budget.saturating_sub(width(label) + width(&suffix));
-    // Shorten the directory first. On very narrow terminals cap the whole row.
-    let path = clip(&path, available.max(1), true);
-    clip(&format!("{label}{path}{suffix}"), budget, false)
 }
+
+fn render(config: &Config, view: &str, columns: usize) -> Result<String, String> {
+    let view = config.view(view)?;
+    let parts: Vec<String> = view.segments.iter().map(collect).collect();
+    Ok(layout(view, &parts, columns))
+}
+
+const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N]\n  whisker view next --current NAME\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nRun ./try-it for the interactive Bash experiment.";
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h") {
-        println!(
-            "Whisker PROTOTYPE\n\n  whisker render [--view minimal|dev|ops] [--columns N]\n  whisker view next --current minimal|dev|ops\n\nRun ./try-it for the interactive Bash experiment."
-        );
+        println!("{USAGE}");
         return Ok(());
     }
-    if args.len() == 4 && args[..3] == ["view", "next", "--current"] {
-        println!("{}", View::parse(&args[3])?.next());
-        return Ok(());
+
+    // `config example` and `config path` must work even when the file is broken.
+    if args[0] == "config" {
+        return match args.get(1).map(String::as_str) {
+            Some("example") => {
+                print!("{}", config::DEFAULT_CONFIG);
+                Ok(())
+            }
+            Some("path") => {
+                println!(
+                    "{}",
+                    config::path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none: set HOME or WHISKER_CONFIG>".into())
+                );
+                Ok(())
+            }
+            Some("check") => {
+                let loaded = config::load()?;
+                let origin = loaded
+                    .origin
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "built-in defaults".into());
+                println!(
+                    "ok: {origin}\nviews: {}\nstart: {}",
+                    loaded.view_names(),
+                    loaded.start
+                );
+                Ok(())
+            }
+            _ => Err("expected config path, check, or example".into()),
+        };
     }
+
+    let config = config::load()?;
+
+    if args[0] == "view" {
+        return match args.get(1).map(String::as_str) {
+            Some("list") => {
+                for view in &config.views {
+                    println!("{}", view.name);
+                }
+                Ok(())
+            }
+            Some("start") => {
+                println!("{}", config.start);
+                Ok(())
+            }
+            Some("next") if args.len() == 4 && args[2] == "--current" => {
+                println!("{}", config.next(&args[3])?);
+                Ok(())
+            }
+            _ => Err("expected view next --current NAME, view list, or view start".into()),
+        };
+    }
+
     if args[0] != "render" {
-        return Err("expected render or view next; see --help".into());
+        return Err("expected render, view, or config; see --help".into());
     }
-    let mut view = View::Dev;
+
+    let mut view = config.start.clone();
     let mut columns = 80;
     let mut options = args[1..].iter();
     while let Some(option) = options.next() {
@@ -209,7 +290,7 @@ fn run() -> Result<(), String> {
             .next()
             .ok_or_else(|| format!("missing value for {option}"))?;
         match option.as_str() {
-            "--view" => view = View::parse(value)?,
+            "--view" => view = value.clone(),
             "--columns" => {
                 columns = value
                     .parse::<usize>()
@@ -219,12 +300,7 @@ fn run() -> Result<(), String> {
             _ => return Err(format!("unknown option: {option}")),
         }
     }
-    let detail = match view {
-        View::Minimal => String::new(),
-        View::Dev => git().unwrap_or_default(),
-        View::Ops => kubernetes(),
-    };
-    println!("{}", layout(view, &directory(), &detail, columns));
+    println!("{}", render(&config, &view, columns)?);
     Ok(())
 }
 
@@ -232,5 +308,183 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("whisker: {error}");
         process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> Config {
+        config::parse(config::DEFAULT_CONFIG, None).expect("default config parses")
+    }
+
+    fn view(config: &Config, name: &str) -> ViewDef {
+        config.view(name).expect("view exists").clone()
+    }
+
+    #[test]
+    fn default_config_matches_the_original_prototype_cycle() {
+        let config = defaults();
+        assert_eq!(config.view_names(), "dev, ops, minimal");
+        assert_eq!(config.start, "dev");
+        assert_eq!(config.next("dev").unwrap(), "ops");
+        assert_eq!(config.next("ops").unwrap(), "minimal");
+        assert_eq!(config.next("minimal").unwrap(), "dev");
+        assert!(config.next("nope").is_err());
+    }
+
+    #[test]
+    fn default_views_lay_out_like_the_original() {
+        let config = defaults();
+        assert_eq!(
+            layout(&view(&config, "minimal"), &["~/dev".into()], 80),
+            "~/dev"
+        );
+        assert_eq!(
+            layout(
+                &view(&config, "dev"),
+                &["~/dev".into(), "git:main*".into()],
+                80
+            ),
+            "[dev] ~/dev  git:main*"
+        );
+        assert_eq!(
+            layout(
+                &view(&config, "ops"),
+                &["~/dev".into(), "⎈ staging:payments".into()],
+                80
+            ),
+            "[ops] ~/dev  ⎈ staging:payments"
+        );
+    }
+
+    #[test]
+    fn an_empty_segment_takes_no_separator() {
+        let config = defaults();
+        assert_eq!(
+            layout(&view(&config, "dev"), &["~/dev".into(), String::new()], 80),
+            "[dev] ~/dev"
+        );
+    }
+
+    #[test]
+    fn the_directory_shrinks_before_the_detail() {
+        let config = defaults();
+        let row = layout(
+            &view(&config, "dev"),
+            &[
+                "~/a/very/long/path/to/somewhere/deep".into(),
+                "git:main*".into(),
+            ],
+            30,
+        );
+        assert!(width(&row) <= 29, "row {row:?} exceeds the budget");
+        assert!(row.ends_with("git:main*"), "detail lost in {row:?}");
+        assert!(row.starts_with("[dev] …"), "wrong end kept in {row:?}");
+    }
+
+    #[test]
+    fn a_narrow_terminal_caps_the_whole_row() {
+        let config = defaults();
+        let row = layout(
+            &view(&config, "dev"),
+            &["~/somewhere".into(), "git:a-very-long-branch-name".into()],
+            12,
+        );
+        assert!(width(&row) <= 11, "row {row:?} exceeds the budget");
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_row() {
+        let config = defaults();
+        let row = layout(
+            &view(&config, "dev"),
+            &["~/dev".into(), "git:ma\nin\u{1b}[31m".into()],
+            80,
+        );
+        assert!(!row.contains('\n') && !row.contains('\u{1b}'), "{row:?}");
+    }
+
+    #[test]
+    fn a_custom_view_and_segment_render() {
+        let config = config::parse(
+            r#"
+views = ["cloud"]
+[view.cloud]
+label = "» "
+separator = " | "
+segments = ["directory", "region"]
+[segment.region]
+command = ["echo", "us-east-1"]
+prefix = "aws:"
+"#,
+            None,
+        )
+        .expect("custom config parses");
+        assert_eq!(config.start, "cloud");
+        assert_eq!(config.next("cloud").unwrap(), "cloud");
+        assert_eq!(
+            render(&config, "cloud", 200).unwrap(),
+            format!("» {} | aws:us-east-1", directory())
+        );
+    }
+
+    #[test]
+    fn a_failing_custom_segment_disappears() {
+        let config = config::parse(
+            r#"
+views = ["x"]
+[view.x]
+segments = ["directory", "gone"]
+[segment.gone]
+command = ["whisker-no-such-program-exists"]
+prefix = "!"
+"#,
+            None,
+        )
+        .unwrap();
+        assert_eq!(render(&config, "x", 200).unwrap(), directory());
+    }
+
+    #[test]
+    fn configuration_mistakes_are_reported() {
+        let cases = [
+            ("views = []", "at least one"),
+            ("views = [\"a\"]", "[view.a] is missing"),
+            ("views = [\"a\"]\n[view.a]\n", "must set segments"),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"nope\"]",
+                "unknown segment",
+            ),
+            (
+                "views = [\"a\",\"a\"]\n[view.a]\nsegments = [\"git\"]",
+                "listed twice",
+            ),
+            (
+                "views = [\"a\"]\nstart = \"b\"\n[view.a]\nsegments = [\"git\"]",
+                "not a configured view",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"git\"]\ncolour = \"red\"",
+                "unknown key colour",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"s\"]\n[segment.s]\nprefix = \"p\"",
+                "must set command",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"git\"]\n[segment.git]\ncommand = [\"x\"]",
+                "built in",
+            ),
+            ("views = [\"a\"] [", "TOML"),
+        ];
+        for (text, expected) in cases {
+            let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
+            assert!(
+                error.to_lowercase().contains(&expected.to_lowercase()),
+                "{text:?} gave {error:?}, wanted {expected:?}"
+            );
+        }
     }
 }
