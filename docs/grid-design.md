@@ -1,8 +1,9 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal, with one piece built. `atomic` and `fallback` on segments
-have landed in the renderer, which closes the correctness gap that made a
-truncated grid dangerous. The grid itself has not: design D exists as two
+**Status:** proposal, with two pieces built. `atomic` and `fallback` on
+segments have landed, closing the correctness gap that made a truncated grid
+dangerous, and so have grid coordinates and 2D movement (`[grid]`, `at`,
+`view move`, `view grid`). The picture itself has not: design D exists as two
 working prototypes, `docs/probes/pixelgrid.py` for rendering and
 `docs/probes/pixelgrid.rs` for the Rust implementation and its cost. Nothing
 yet updates the state the grid would show.
@@ -416,10 +417,13 @@ state file is already neutralised.
   a wrong reading. Measured against the real binary: at 24 columns, where the
   strip previously dropped its alert while still looking like a healthy grid,
   the segment now swaps to its fallback summary.
-- 2D movement. `view next --current NAME` walks a single ring, verified: four
+- ~~2D movement. `view next --current NAME` walks a single ring, verified: four
   views cycle `a1 → a2 → b1 → b2 → a1`. A grid needs something like
   `view move --direction left|right|up|down --current NAME`, plus grid
-  coordinates in the config for it to move through.
+  coordinates in the config for it to move through.~~ **Built.** `[grid]` sets
+  the axes, a view's `at = [row, column]` places it, and `view move` walks it.
+  Movement does not wrap and skips undefined cells; `view grid` reports the
+  shape for a shell to render.
 - A place to store per-node alert state and the last-seen value that `changed`
   would compare against.
 - For design D: emitting a graphics placement from inside the renderer rather
@@ -496,7 +500,9 @@ separate maps rather than one wide grid.
 
 Sparse grids need a decision: if `[node.data.prod]` is undefined, is it an empty
 cell you can move onto, or is it skipped? Skipping is friendlier; showing a hole
-is more honest about the shape.
+is more honest about the shape. *Resolved in the implementation:* movement
+skips undefined cells, so a direction key always does something visible, while
+`view grid` still reports the hole as `-` so the shape stays honest.
 
 ## Will it be fast enough?
 
@@ -589,8 +595,9 @@ Until at least steps 1 and 2 exist, the honest description of this feature is
    `pixelgrid.rs` is a complete Rust implementation of the renderer, measured
    at 40 us, so this is a matter of porting it in and querying support and cell
    size at startup.
-3. **Navigation.** Leader key plus directional keys, with the existing
-   input-preservation checks extended to cover it.
+3. **Navigation.** *Built.* Grid coordinates and `view move` exist, so the
+   model is navigable from the command line. What remains is binding keys to
+   it, with the existing input-preservation checks extended to cover them.
 4. **Alert state file.** Reading and display only, with a documented format, so
    anything can write it. Until this exists the grid shows a fixed picture; see
    [Nothing updates yet](#nothing-updates-yet).

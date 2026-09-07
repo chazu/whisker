@@ -316,7 +316,7 @@ fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<St
     Ok(layout(view, &parts, columns, color))
 }
 
-const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless a non-empty NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
+const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view move --direction left|right|up|down --current NAME\n  whisker view grid\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless a non-empty NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
 
 /// Whisker's output is captured into a shell variable and printed later, so a
 /// TTY check here would always say "not a terminal". Auto therefore honours the
@@ -389,7 +389,25 @@ fn run() -> Result<(), String> {
                 println!("{}", config.next(&args[3])?);
                 Ok(())
             }
-            _ => Err("expected view next --current NAME, view list, or view start".into()),
+            Some("move")
+                if args.len() == 6 && args[2] == "--direction" && args[4] == "--current" =>
+            {
+                let direction = config::Direction::parse(&args[3])?;
+                println!("{}", config.moved(&args[5], direction)?);
+                Ok(())
+            }
+            Some("grid") => {
+                // The grid as plain text, so a shell can render it without
+                // knowing the layout.
+                for row in config.grid_rows() {
+                    println!("{row}");
+                }
+                Ok(())
+            }
+            _ => Err("expected view next --current NAME, \
+                      view move --direction left|right|up|down --current NAME, \
+                      view grid, view list, or view start"
+                .into()),
         };
     }
 
@@ -915,6 +933,129 @@ fallback = ["printf", "%s", "still far too wide to fit in this row"]
             let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
             assert!(
                 error.to_lowercase().contains(expected),
+                "{text:?} gave {error:?}, wanted {expected:?}"
+            );
+        }
+    }
+
+    /// A grid is a way of navigating the views that already exist, so these
+    /// exercise movement rather than rendering.
+    fn grid_config() -> config::Config {
+        config::parse(
+            r#"
+views = ["ops", "staging", "prod", "infra_ops", "infra_prod", "data_staging"]
+start = "infra_ops"
+[grid]
+rows = ["code", "infra", "data"]
+columns = ["ops", "staging", "prod"]
+[view.ops]
+segments = ["directory"]
+at = ["code", "ops"]
+[view.staging]
+segments = ["directory"]
+at = ["code", "staging"]
+[view.prod]
+segments = ["directory"]
+at = ["code", "prod"]
+[view.infra_ops]
+segments = ["directory"]
+at = ["infra", "ops"]
+[view.infra_prod]
+segments = ["directory"]
+at = ["infra", "prod"]
+[view.data_staging]
+segments = ["directory"]
+at = ["data", "staging"]
+"#,
+            None,
+        )
+        .expect("grid config parses")
+    }
+
+    #[test]
+    fn directional_movement_walks_the_grid() {
+        let config = grid_config();
+        use config::Direction::*;
+        assert_eq!(config.moved("ops", Right).unwrap(), "staging");
+        assert_eq!(config.moved("staging", Right).unwrap(), "prod");
+        assert_eq!(config.moved("staging", Down).unwrap(), "data_staging");
+        assert_eq!(config.moved("infra_ops", Up).unwrap(), "ops");
+    }
+
+    #[test]
+    fn movement_skips_undefined_cells_rather_than_stalling() {
+        // [infra, staging] is undefined. A key that appears to do nothing is
+        // worse than one that moves further than expected, so the search
+        // continues in the same direction.
+        let config = grid_config();
+        assert_eq!(
+            config.moved("infra_ops", config::Direction::Right).unwrap(),
+            "infra_prod"
+        );
+    }
+
+    #[test]
+    fn movement_stops_at_the_edges_instead_of_wrapping() {
+        // A grid is a map: moving left at the left edge does nothing. Wrapping
+        // would teleport the user across the screen for a nudge.
+        let config = grid_config();
+        use config::Direction::*;
+        assert_eq!(config.moved("ops", Up).unwrap(), "ops");
+        assert_eq!(config.moved("ops", Left).unwrap(), "ops");
+        assert_eq!(config.moved("prod", Right).unwrap(), "prod");
+        // Nothing below [infra, ops] is defined, so this stays put too.
+        assert_eq!(config.moved("infra_ops", Down).unwrap(), "infra_ops");
+    }
+
+    #[test]
+    fn movement_is_inert_without_a_grid() {
+        // An existing flat configuration must be unaffected by the new key.
+        let config = config::parse(
+            "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]",
+            None,
+        )
+        .expect("parses");
+        assert_eq!(config.moved("a", config::Direction::Left).unwrap(), "a");
+        assert!(config.grid_rows().is_empty());
+    }
+
+    #[test]
+    fn the_grid_reports_its_shape_with_holes() {
+        let config = grid_config();
+        assert_eq!(
+            config.grid_rows(),
+            vec![
+                "ops staging prod",
+                "infra_ops - infra_prod",
+                "- data_staging -",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_grid_rejects_contradictory_configuration() {
+        let cases = [
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]\nat = [\"code\", \"ops\"]",
+                "needs a [grid]",
+            ),
+            (
+                "views = [\"a\"]\n[grid]\nrows = [\"code\"]\ncolumns = [\"ops\"]\n[view.a]\nsegments = [\"directory\"]\nat = [\"nope\", \"ops\"]",
+                "not in grid.rows",
+            ),
+            (
+                "views = [\"a\", \"b\"]\n[grid]\nrows = [\"code\"]\ncolumns = [\"ops\"]\n[view.a]\nsegments = [\"directory\"]\nat = [\"code\", \"ops\"]\n[view.b]\nsegments = [\"directory\"]\nat = [\"code\", \"ops\"]",
+                "both sit at",
+            ),
+            (
+                "views = [\"a\"]\n[grid]\nrows = [\"code\"]\n[view.a]\nsegments = [\"directory\"]",
+                "must set columns",
+            ),
+        ];
+        for (text, expected) in cases {
+            let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
+            assert!(
+                error.contains(expected),
                 "{text:?} gave {error:?}, wanted {expected:?}"
             );
         }

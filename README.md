@@ -169,6 +169,8 @@ target/debug/whisker render --view dev --columns 80
 target/debug/whisker render --view ops --columns 80 --color always
 target/debug/whisker render --view ops --columns 80 --color never
 target/debug/whisker view next --current dev
+target/debug/whisker view move --direction right --current dev
+target/debug/whisker view grid
 target/debug/whisker view list
 target/debug/whisker view start
 target/debug/whisker config path
@@ -177,6 +179,38 @@ target/debug/whisker config check
 
 `view list` and `view start` are what the shell layer uses, so it never hard
 codes a view name.
+
+### Arranging views on a grid
+
+Views are a cycle by default: `view next` walks them in order. They can also be
+given positions on a 2D grid, which is a way of navigating the views that
+already exist rather than a second kind of thing. A node is a view with
+coordinates.
+
+```toml
+[grid]
+rows = ["code", "infra", "data"]
+columns = ["ops", "staging", "prod"]
+
+[view.infra_prod]
+segments = ["directory", "kubernetes"]
+at = ["infra", "prod"]
+```
+
+`view move --direction left|right|up|down --current NAME` then reports where
+that step lands, and `view grid` prints the shape, one line per row, with `-`
+for a cell no view claims.
+
+Two behaviours are deliberate. Movement does not wrap: a grid is a map, and on
+a map moving left at the left edge does nothing, where wrapping would teleport
+you across the screen for a keypress that felt like a nudge. And undefined
+cells are skipped rather than landed on, because sparse grids are normal and a
+key that appears to do nothing is worse than one that moves further than
+expected.
+
+The grid is optional and additive. Without it, or for a view with no `at`,
+`view move` returns the current view unchanged, so an existing configuration
+behaves exactly as before.
 
 Known limits. Collectors are synchronous and local, so a slow Git repository or
 custom command delays a redraw; there are no timeouts. Styling is static: it

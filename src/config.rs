@@ -57,12 +57,59 @@ pub struct ViewDef {
     pub separator: String,
     pub separator_style: Style,
     pub segments: Vec<Segment>,
+    /// Position on the optional 2D grid, as `[row, column]` indices into
+    /// `Grid::rows` and `Grid::columns`.
+    ///
+    /// Views without a position are reachable by `view next` but not by
+    /// directional movement, so an existing flat configuration is unaffected.
+    pub at: Option<(usize, usize)>,
+}
+
+/// The optional 2D arrangement of views.
+///
+/// The grid is a way of *navigating* the views that already exist rather than
+/// a second kind of thing: a node is a view with coordinates.
+#[derive(Clone, Debug, Default)]
+pub struct Grid {
+    pub rows: Vec<String>,
+    pub columns: Vec<String>,
+}
+
+impl Grid {
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty() || self.columns.is_empty()
+    }
+}
+
+/// A direction to move in, from a directional key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl Direction {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "left" => Ok(Direction::Left),
+            "right" => Ok(Direction::Right),
+            "up" => Ok(Direction::Up),
+            "down" => Ok(Direction::Down),
+            other => Err(format!(
+                "unknown direction: {other}; use left, right, up, or down"
+            )),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub views: Vec<ViewDef>,
     pub start: String,
+    /// The optional 2D arrangement; empty when no grid is configured.
+    pub grid: Grid,
     /// The file the configuration came from, or None for built-in defaults.
     pub origin: Option<PathBuf>,
 }
@@ -91,6 +138,89 @@ impl Config {
             .position(|view| view.name == current)
             .ok_or_else(|| format!("unknown view: {current}; use {}", self.view_names()))?;
         Ok(&self.views[(index + 1) % self.views.len()].name)
+    }
+
+    /// The view reached by moving one step from `current`, or `current` itself
+    /// when there is nowhere to go.
+    ///
+    /// Two decisions are worth stating, because both are about not surprising
+    /// the user rather than about convenience:
+    ///
+    /// Movement does not wrap. A grid is a map, and on a map moving left at
+    /// the left edge does nothing; wrapping would teleport you across the
+    /// screen for a keypress that felt like a nudge.
+    ///
+    /// Undefined cells are skipped rather than landed on. A sparse grid is
+    /// common, since not every concern exists in every environment, and a key
+    /// that appears to do nothing is worse than one that moves further than
+    /// expected. The search continues in the same direction until it finds a
+    /// defined view or runs off the edge.
+    pub fn moved(&self, current: &str, direction: Direction) -> Result<&str, String> {
+        let from = self
+            .views
+            .iter()
+            .find(|view| view.name == current)
+            .ok_or_else(|| format!("unknown view: {current}; use {}", self.view_names()))?;
+        let Some((row, column)) = from.at else {
+            // Without coordinates there is no direction to move in. Staying
+            // put is the honest answer, and it keeps the key harmless in a
+            // configuration that has no grid at all.
+            return Ok(&from.name);
+        };
+
+        let (dr, dc) = match direction {
+            Direction::Left => (0isize, -1isize),
+            Direction::Right => (0, 1),
+            Direction::Up => (-1, 0),
+            Direction::Down => (1, 0),
+        };
+        let (mut r, mut c) = (row as isize, column as isize);
+        loop {
+            r += dr;
+            c += dc;
+            if r < 0
+                || c < 0
+                || r as usize >= self.grid.rows.len()
+                || c as usize >= self.grid.columns.len()
+            {
+                return Ok(&from.name);
+            }
+            if let Some(view) = self
+                .views
+                .iter()
+                .find(|view| view.at == Some((r as usize, c as usize)))
+            {
+                return Ok(&view.name);
+            }
+        }
+    }
+
+    /// The grid as one line per row, each cell being a view name or `-` for an
+    /// undefined cell.
+    ///
+    /// Emitting the shape rather than a drawn picture keeps the layout
+    /// decision, text strip or image, outside this function, and lets a shell
+    /// script render it however it likes.
+    pub fn grid_rows(&self) -> Vec<String> {
+        if self.grid.is_empty() {
+            return Vec::new();
+        }
+        self.grid
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(r, _)| {
+                let cells: Vec<&str> = (0..self.grid.columns.len())
+                    .map(|c| {
+                        self.views
+                            .iter()
+                            .find(|view| view.at == Some((r, c)))
+                            .map_or("-", |view| view.name.as_str())
+                    })
+                    .collect();
+                cells.join(" ")
+            })
+            .collect()
     }
 }
 
@@ -250,9 +380,33 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
     let root: toml::Table = text.parse().map_err(|error| format!("{error}"))?;
     known_keys(
         &root,
-        &["views", "start", "view", "segment"],
+        &["views", "start", "view", "segment", "grid"],
         "configuration",
     )?;
+
+    // The grid is optional; without it Whisker behaves exactly as before.
+    let mut grid = Grid::default();
+    if let Some(value) = root.get("grid") {
+        let table = value
+            .as_table()
+            .ok_or_else(|| "grid must be a table".to_string())?;
+        known_keys(table, &["rows", "columns"], "grid")?;
+        let axis = |key: &str| -> Result<Vec<String>, String> {
+            table
+                .get(key)
+                .ok_or_else(|| format!("grid must set {key}"))?
+                .as_array()
+                .ok_or_else(|| format!("grid.{key} must be an array of names"))?
+                .iter()
+                .map(|item| as_str(item, &format!("grid.{key} entry")))
+                .collect()
+        };
+        grid.rows = axis("rows")?;
+        grid.columns = axis("columns")?;
+        if grid.rows.is_empty() || grid.columns.is_empty() {
+            return Err("grid.rows and grid.columns must each name an axis".into());
+        }
+    }
 
     let mut segments: BTreeMap<String, Segment> = BTreeMap::new();
     if let Some(defined) = root.get("segment") {
@@ -311,9 +465,42 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
                 "style",
                 "label_style",
                 "separator_style",
+                "at",
             ],
             &format!("view.{name}"),
         )?;
+        // A view's grid position names its row and column, so a configuration
+        // reads as coordinates rather than as indices to be counted out.
+        let at = match table.get("at") {
+            None => None,
+            Some(value) => {
+                if grid.is_empty() {
+                    return Err(format!("view.{name}.at needs a [grid] to sit on"));
+                }
+                let pair = value
+                    .as_array()
+                    .filter(|array| array.len() == 2)
+                    .ok_or_else(|| format!("view.{name}.at must be [row, column]"))?;
+                let row_name = as_str(&pair[0], &format!("view.{name}.at row"))?;
+                let column_name = as_str(&pair[1], &format!("view.{name}.at column"))?;
+                let row = grid.rows.iter().position(|r| *r == row_name).ok_or_else(|| {
+                    format!(
+                        "view.{name}.at names row {row_name}, which is not in grid.rows"
+                    )
+                })?;
+                let column = grid
+                    .columns
+                    .iter()
+                    .position(|c| *c == column_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "view.{name}.at names column {column_name}, \
+                             which is not in grid.columns"
+                        )
+                    })?;
+                Some((row, column))
+            }
+        };
         let view_style = table
             .get("style")
             .map(|value| Style::parse(value, &format!("view.{name}.style")))
@@ -355,6 +542,7 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
                 .unwrap_or_else(|| "  ".into()),
             label_style,
             separator_style,
+            at,
             segments: names
                 .iter()
                 .map(|segment_name| {
@@ -381,9 +569,23 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
         ));
     }
 
+    // Two views on one cell would make movement ambiguous: a direction key
+    // could land on either, and which one you got would depend on ordering.
+    for (index, view) in views.iter().enumerate() {
+        if let Some(at) = view.at {
+            if let Some(other) = views[..index].iter().find(|other| other.at == Some(at)) {
+                return Err(format!(
+                    "view.{} and view.{} both sit at [{}, {}]",
+                    other.name, view.name, grid.rows[at.0], grid.columns[at.1]
+                ));
+            }
+        }
+    }
+
     Ok(Config {
         views,
         start,
+        grid,
         origin,
     })
 }

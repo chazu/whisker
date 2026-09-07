@@ -21,6 +21,18 @@ segments = ["directory", "git"]
 label = "[ops] "
 segments = ["directory", "kubernetes"]
 
+# Views can also be arranged on a 2D grid and moved through with
+# `whisker view move --direction left|right|up|down --current NAME`, which is a
+# way of navigating the views that already exist rather than a second kind of
+# thing. Movement does not wrap, and cells no view claims are skipped.
+#
+# [grid]
+# rows = ["code", "infra"]
+# columns = ["dev", "ops"]
+#
+# [view.ops]
+# at = ["infra", "ops"]     # this view's place on the grid
+#
 # Segments only need a [segment.name] entry to customise them, or to define a
 # new one. Built-in sources: directory, git, kubernetes.
 #
