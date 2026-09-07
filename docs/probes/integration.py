@@ -75,6 +75,59 @@ if row.count("\n") != 1:
     failures.append("more than one line reached the row")
 print(f"   escapes stripped: {'\x1b' not in row}; single line: {row.count(chr(10)) == 1}")
 
+print("\n4. Design D's trust argument holds in the real binary")
+# The claim: a pixel grid needs no relaxation of clean(), because Whisker's own
+# escapes are emitted after cleaning and measuring, while segment output is
+# laundered. Both paths are exercised in one config, so the two cannot be
+# confused. This is the load-bearing safety claim for design D.
+config = os.path.join(CONFIGS, "trust-paths.toml")
+with open(config, "w") as handle:
+    handle.write(
+        'views = ["g"]\n[view.g]\nsegments = ["evil"]\n'
+        '[segment.evil]\n'
+        'command = ["printf", "%b", "\\\\033[31mRED\\\\033[0m"]\n'
+        'style = { fg = "green", bold = true }\n'
+    )
+try:
+    plain = subprocess.run(
+        [BIN, "render", "--columns", "80", "--color", "never"],
+        capture_output=True, text=True, cwd=ROOT,
+        env=dict(os.environ, WHISKER_CONFIG=config),
+    ).stdout
+    painted = subprocess.run(
+        [BIN, "render", "--columns", "80", "--color", "always"],
+        capture_output=True, text=True, cwd=ROOT,
+        env=dict(os.environ, WHISKER_CONFIG=config),
+    ).stdout
+finally:
+    os.remove(config)
+
+if "\x1b" in plain:
+    failures.append("a segment's own escape survived into the row")
+if "\x1b[0;1;32m" not in painted:
+    failures.append("Whisker's own style escape did not reach the row")
+# The segment's escape must stay neutralised even when styling is on, or the
+# two paths are not actually separate.
+if "\x1b[31m" in painted:
+    failures.append("segment escape survived once styling was enabled")
+print(f"   segment escape blanked: {'\x1b' not in plain}; "
+      f"style escape emitted: {'\x1b[0;1;32m' in painted}; "
+      f"segment escape still blanked when styled: {'\x1b[31m' not in painted}")
+
+print("\n5. A graphics payload through a segment is inert")
+# The corollary: design D cannot be built as an ordinary command segment, which
+# is why the renderer has to emit the placement itself.
+sixel = os.path.join(CONFIGS, "graphics.toml")
+row = subprocess.run(
+    [BIN, "render", "--columns", "80", "--color", "never"],
+    capture_output=True, text=True, cwd=ROOT,
+    env=dict(os.environ, WHISKER_CONFIG=sixel),
+).stdout
+if "\x1bP" in row or "\x1b\\" in row:
+    failures.append("a sixel introducer or terminator survived a segment")
+print(f"   DCS introducer gone: {'\x1bP' not in row}; "
+      f"terminator gone: {chr(27) + chr(92) not in row}")
+
 if failures:
     print("\nFAILURES:")
     for failure in failures:

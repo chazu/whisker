@@ -238,7 +238,7 @@ runs after the row has been measured. That is why it needs no change to
 
 **Size.** Measured with a real PNG encoder. At a 16x34 pixel cell, a 3x3 grid
 with three-pixel dots and one-pixel gaps is 11x11 pixels and fits in **one
-cell**, with a payload around 110 bytes. One cell holds up to 4x8 nodes at that
+cell**, with a payload of 124 bytes. One cell holds up to 4x8 nodes at that
 scale, or 5x11 with two-pixel dots; two cells hold 8x8. The grid is therefore
 free in the only currency design B was expensive in, which is screen space.
 
@@ -546,7 +546,7 @@ emulator. Each probe drove an actual interactive shell.
 | Whether the terminal re-draws the image itself | **Not established**; pyte has no image handling |
 | Cell size from `TIOCGWINSZ` | 1280x816 for an 80x24 tty, giving a 16x34 cell |
 | Trusted vs untrusted escape paths | A style's `ESC[0;1;32m` survives while a segment's `ESC[31m` is blanked |
-| 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, ~110 byte payload |
+| 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, 124 byte RGBA payload |
 | Node capacity of one cell | 4x8 at 3px dots, 5x11 at 2px; two cells give 8x8 |
 
 The async result is the one that matters, because it converts "live dashboard"

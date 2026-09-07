@@ -3,9 +3,12 @@
 Experiments backing [../grid-design.md](../grid-design.md).
 
 `integration.py` is the important one: it exercises Whisker's real binary and
-configuration, and it is what found the truncation flaw in design A. The others
-drive a bare Bash session in a pseudo-terminal to learn what the shell and
-terminal allow, and test nothing about Whisker itself.
+configuration, and it is what found the truncation flaw in design A. It also
+covers design D's safety claims: that Whisker's own escapes reach the row while
+a segment's identical escape is blanked, and that a graphics payload sent
+through a segment comes out inert. The others drive a bare Bash session in a
+pseudo-terminal to learn what the shell and terminal allow, and test nothing
+about Whisker itself.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install pyte
@@ -20,6 +23,7 @@ python3 -m venv .venv && .venv/bin/pip install pyte
 .venv/bin/python docs/probes/pixelgrid.py --selftest   # design D, the pixel grid
 python3 docs/probes/pixelgrid.py               # ...and see it, in a real terminal
 .venv/bin/python docs/probes/invariants.py     # Ctrl-L, resize, scrollback
+python3 docs/probes/docaudit.py                # do the doc's numbers still hold?
 ```
 
 The Bash probes need Bash 5+ (`/opt/homebrew/bin/bash` on this machine; edit the
@@ -45,5 +49,9 @@ Two worth rerunning if you doubt the document:
   ESC7/ESC8 stand-in rather than a real placement, since pyte cannot draw one,
   but the structural question of whether Readline's arithmetic holds is exactly
   what it can answer.
+- `docaudit.py` re-derives the measurements quoted in `grid-design.md` from the
+  code and fails if they have drifted. It needs neither a terminal nor any
+  dependency. It has already earned its place: switching the encoder to RGBA
+  moved the payload from 110 to 124 bytes and the document did not notice.
 
 `configs/` holds the Whisker configurations `integration.py` renders.
