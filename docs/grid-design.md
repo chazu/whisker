@@ -291,8 +291,23 @@ the questions the probes could not and corrects one of them.
   exactly 34 points, one row. The encoder now emits RGBA with a transparent
   background, so only the dots are drawn.
 
-Still unchecked: Ctrl-L, resize, and scrollback, whose invariants were
-established for a text row rather than an image.
+Still unchecked at that point: Ctrl-L, resize, and scrollback, whose
+invariants were established for a text row rather than an image.
+
+**The row invariants hold structurally.** Those three were then checked in
+`invariants.py`, against a real Bash whose prompt draws a region and restores
+the cursor, which is behaviourally what a placement with `C=1` does. Ctrl-L
+redraws the prompt at the top of the screen with the typed command intact and
+the cursor on the same column; after a resize the command still begins at
+column 4, the declared prompt width; and after twenty lines of scrolling output
+a second command types cleanly. Nine checks, all passing.
+
+What that does not cover is the image itself: whether the terminal *re-draws*
+the placement on a Ctrl-L or reflows it on a resize is a property of the
+terminal's image handling, and pyte has none. Since the grid is re-emitted on
+every prompt, a stale or dropped image should self-correct at the next prompt,
+but a placement that survives into the scrollback as a ghost would not. That is
+the one thing left to watch when this is built.
 
 **Recommendation:** build D, with A's text strip as the fallback for terminals
 that cannot draw it, and C as an on-demand full map. B's always-visible text
@@ -527,7 +542,8 @@ emulator. Each probe drove an actual interactive shell.
 | Drawn size on a 2x display | Art of 20x20 drew 10x10 points: the cell box is points, so HiDPI needs `--dpr 2` |
 | Opaque image background | Painted a visible rectangle over the row; fixed by emitting RGBA |
 | Ghostty graphics query | Replied `OK`; `TIOCGWINSZ` gave a 16x34 cell |
-| Ctrl-L, resize, scrollback with an image | **Not established**; those invariants were set for a text row |
+| Ctrl-L, resize, scrollback with an image | Row invariants hold: command, prompt width and cursor column all preserved (9 checks) |
+| Whether the terminal re-draws the image itself | **Not established**; pyte has no image handling |
 | Cell size from `TIOCGWINSZ` | 1280x816 for an 80x24 tty, giving a 16x34 cell |
 | Trusted vs untrusted escape paths | A style's `ESC[0;1;32m` survives while a segment's `ESC[31m` is blanked |
 | 3x3 pixel grid, 3px dots, 1px gaps | 11x11 px, fits one 16x34 cell, ~110 byte payload |

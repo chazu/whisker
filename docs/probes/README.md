@@ -19,6 +19,7 @@ python3 -m venv .venv && .venv/bin/pip install pyte
 .venv/bin/python docs/probes/graphics.py        # \[ \] width accounting
 .venv/bin/python docs/probes/pixelgrid.py --selftest   # design D, the pixel grid
 python3 docs/probes/pixelgrid.py               # ...and see it, in a real terminal
+.venv/bin/python docs/probes/invariants.py     # Ctrl-L, resize, scrollback
 ```
 
 The Bash probes need Bash 5+ (`/opt/homebrew/bin/bash` on this machine; edit the
@@ -39,5 +40,10 @@ Two worth rerunning if you doubt the document:
   as a real PNG placed in an exact number of cells with the cursor pinned.
   `--selftest` needs no terminal and is the one to run in CI; running it plain
   in a graphics-capable terminal shows the grid inline.
+- `invariants.py` checks that a prompt whose width comes from a drawn-then-
+  restored region survives Ctrl-L, a resize, and scrolling. It uses an
+  ESC7/ESC8 stand-in rather than a real placement, since pyte cannot draw one,
+  but the structural question of whether Readline's arithmetic holds is exactly
+  what it can answer.
 
 `configs/` holds the Whisker configurations `integration.py` renders.
