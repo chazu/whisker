@@ -3,9 +3,10 @@ mod config;
 mod style;
 
 use std::{
-    env,
+    env, fs,
     path::Path,
     process::{self, Command, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use unicode_width::UnicodeWidthChar;
 
@@ -316,7 +317,98 @@ fn render(config: &Config, view: &str, columns: usize, color: bool) -> Result<St
     Ok(layout(view, &parts, columns, color))
 }
 
-const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view move --direction left|right|up|down --current NAME\n  whisker view grid\n  whisker view list\n  whisker view start\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless a non-empty NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
+/// Run every node's check and write the results to the state file.
+///
+/// This is the half of the design that cannot happen inline. One Kubernetes
+/// check takes about 29 ms, so a nine-node grid would add a quarter of a second
+/// to every prompt before touching a network. Run this from cron, a systemd
+/// timer, or a loop in a background shell; the prompt only ever reads what it
+/// leaves behind.
+///
+/// A run reports every node with an `alert`, and only those: a node with no
+/// check has no opinion to record, and inventing `ok` for it would be the same
+/// class of lie as a truncated grid.
+fn collect_states(config: &Config) -> Result<String, String> {
+    let Some(path) = &config.grid.state else {
+        return Err("collect needs grid.state to say where to write".into());
+    };
+
+    let mut lines = String::new();
+    for view in &config.views {
+        let Some(alert) = &view.alert else {
+            continue;
+        };
+        let args: Vec<&str> = alert.command[1..].iter().map(String::as_str).collect();
+        let result = Command::new(&alert.command[0])
+            .args(&args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output();
+        let state = match (&result, alert.when) {
+            // A check that cannot run has not reported that things are fine.
+            // Unknown is the honest answer, and it is visibly different from
+            // ok in the grid.
+            (Err(_), _) => "unknown",
+            (Ok(done), config::When::Exit) => {
+                if done.status.success() {
+                    "ok"
+                } else {
+                    "alert"
+                }
+            }
+            (Ok(done), config::When::Output) => {
+                if String::from_utf8_lossy(&done.stdout).trim().is_empty() {
+                    "ok"
+                } else {
+                    "alert"
+                }
+            }
+        };
+        // The trailing note is for a human reading the file; whisker itself
+        // reads only the first two words.
+        lines.push_str(&format!("{} {} {}\n", view.name, state, timestamp()));
+    }
+
+    write_atomically(path, &lines)?;
+    Ok(lines)
+}
+
+/// Replace the state file in one step.
+///
+/// The prompt may read at any moment, including while this is running, so the
+/// file must never be observed half-written. Writing a temporary file beside it
+/// and renaming is atomic within a filesystem, which turns a torn read into an
+/// impossible state rather than an unlikely one.
+fn write_atomically(path: &Path, contents: &str) -> Result<(), String> {
+    let temporary = path.with_extension(format!("tmp.{}", std::process::id()));
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+    }
+    fs::write(&temporary, contents)
+        .map_err(|error| format!("cannot write {}: {error}", temporary.display()))?;
+    fs::rename(&temporary, path).map_err(|error| {
+        // Leaving a stray temporary file behind would be worse than the
+        // failure itself, since nothing would ever clean it up.
+        let _ = fs::remove_file(&temporary);
+        format!("cannot replace {}: {error}", path.display())
+    })
+}
+
+/// Seconds since the epoch, for the human-readable note on each line.
+///
+/// A wall-clock timestamp would need a date library for one field nothing
+/// parses, so this stays a plain count.
+fn timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default()
+}
+
+const USAGE: &str = "Whisker\n\n  whisker render [--view NAME] [--columns N] [--color auto|always|never]\n  whisker view next --current NAME\n  whisker view move --direction left|right|up|down --current NAME\n  whisker view grid\n  whisker view list\n  whisker view start\n  whisker collect\n  whisker config path|check|example\n\nConfiguration: $WHISKER_CONFIG, else ~/.config/whisker/config.toml.\nColour defaults to auto: on unless a non-empty NO_COLOR or TERM=dumb is set. The output is\ncaptured by the shell, so auto cannot detect a terminal; use --color never to\nbe certain.\nRun ./try-it for the interactive Bash experiment.";
 
 /// Whisker's output is captured into a shell variable and printed later, so a
 /// TTY check here would always say "not a terminal". Auto therefore honours the
@@ -411,8 +503,18 @@ fn run() -> Result<(), String> {
         };
     }
 
+    if args[0] == "collect" {
+        if args.len() != 1 {
+            return Err("expected collect".into());
+        }
+        // Print what was written, so a run can be inspected without opening
+        // the file and a cron entry can be debugged by hand.
+        print!("{}", collect_states(&config)?);
+        return Ok(());
+    }
+
     if args[0] != "render" {
-        return Err("expected render, view, or config; see --help".into());
+        return Err("expected render, collect, view, or config; see --help".into());
     }
 
     let mut view = config.start.clone();
@@ -1163,6 +1265,167 @@ at = ["one", "left"]
             (
                 "views = [\"a\"]\n[grid]\nrows = [\"code\"]\n[view.a]\nsegments = [\"directory\"]",
                 "must set columns",
+            ),
+        ];
+        for (text, expected) in cases {
+            let error = config::parse(text, None).expect_err(&format!("{text:?} should fail"));
+            assert!(
+                error.contains(expected),
+                "{text:?} gave {error:?}, wanted {expected:?}"
+            );
+        }
+    }
+
+    /// The collector runs each node's check and writes the state file. These
+    /// cover what each `when` means and what happens when a check cannot run.
+    fn collect_config(dir: &std::path::Path) -> config::Config {
+        let path = dir.join("nodes");
+        config::parse(
+            &format!(
+                r#"
+views = ["healthy", "failing", "noisy", "quiet", "missing", "nocheck"]
+[grid]
+rows = ["a", "b"]
+columns = ["one", "two", "three"]
+state = "{}"
+[view.healthy]
+segments = ["directory"]
+at = ["a", "one"]
+alert = {{ command = ["true"], when = "exit" }}
+[view.failing]
+segments = ["directory"]
+at = ["a", "two"]
+alert = {{ command = ["false"], when = "exit" }}
+[view.noisy]
+segments = ["directory"]
+at = ["a", "three"]
+alert = {{ command = ["printf", "3 warning events"], when = "output" }}
+[view.quiet]
+segments = ["directory"]
+at = ["b", "one"]
+alert = {{ command = ["true"], when = "output" }}
+[view.missing]
+segments = ["directory"]
+at = ["b", "two"]
+alert = {{ command = ["whisker-no-such-checker"], when = "exit" }}
+[view.nocheck]
+segments = ["directory"]
+at = ["b", "three"]
+"#,
+                path.display()
+            ),
+            None,
+        )
+        .expect("collect config parses")
+    }
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "whisker-{label}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn collecting_records_each_kind_of_check() {
+        let dir = scratch("collect");
+        let config = collect_config(&dir);
+        let written = collect_states(&config).expect("collects");
+
+        let state_of = |name: &str| -> String {
+            written
+                .lines()
+                .find(|line| line.starts_with(&format!("{name} ")))
+                .map(|line| line.split_whitespace().nth(1).unwrap().to_string())
+                .unwrap_or_else(|| "<absent>".into())
+        };
+        assert_eq!(state_of("healthy"), "ok", "zero exit is ok");
+        assert_eq!(state_of("failing"), "alert", "non-zero exit is an alert");
+        assert_eq!(state_of("noisy"), "alert", "output is an alert");
+        assert_eq!(state_of("quiet"), "ok", "no output is ok");
+        // A check that cannot run has not said things are fine.
+        assert_eq!(state_of("missing"), "unknown");
+        // A node with no check has no opinion, so it is not in the file at all
+        // rather than being invented as ok.
+        assert_eq!(state_of("nocheck"), "<absent>");
+
+        // And the prompt reads back exactly what was collected.
+        assert_eq!(
+            config.grid_rows(),
+            vec![
+                "healthy:ok failing:alert noisy:alert",
+                "quiet:ok missing:unknown nocheck:unknown",
+            ]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn collecting_replaces_the_file_rather_than_appending() {
+        // A collector runs repeatedly; if it appended, the file would grow
+        // without bound and old states would shadow new ones.
+        let dir = scratch("replace");
+        let config = collect_config(&dir);
+        let first = collect_states(&config).expect("collects");
+        let second = collect_states(&config).expect("collects again");
+        assert_eq!(first.lines().count(), second.lines().count());
+        let on_disk = std::fs::read_to_string(dir.join("nodes")).expect("readable");
+        assert_eq!(on_disk.lines().count(), second.lines().count());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn collecting_leaves_no_temporary_file_behind() {
+        // The write goes through a temporary and a rename, so the prompt never
+        // sees a half-written file. The temporary must not survive the run.
+        let dir = scratch("tidy");
+        let config = collect_config(&dir);
+        collect_states(&config).expect("collects");
+        let strays: Vec<_> = std::fs::read_dir(&dir)
+            .expect("listable")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name != "nodes")
+            .collect();
+        assert!(strays.is_empty(), "left behind: {strays:?}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn collecting_needs_somewhere_to_write() {
+        let config = config::parse(
+            "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]",
+            None,
+        )
+        .expect("parses");
+        let error = collect_states(&config).expect_err("no grid.state");
+        assert!(error.contains("grid.state"), "{error:?}");
+    }
+
+    #[test]
+    fn an_alert_rejects_contradictory_configuration() {
+        let cases = [
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]\nalert = { command = [\"true\"] }",
+                "must set when",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]\nalert = { command = [\"true\"], when = \"vibes\" }",
+                "use output or exit",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]\nalert = { when = \"exit\" }",
+                "must set command",
+            ),
+            (
+                "views = [\"a\"]\n[view.a]\nsegments = [\"directory\"]\nalert = { command = [], when = \"exit\" }",
+                "must name a program",
             ),
         ];
         for (text, expected) in cases {

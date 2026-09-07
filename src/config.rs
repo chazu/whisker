@@ -63,6 +63,8 @@ pub struct ViewDef {
     /// Views without a position are reachable by `view next` but not by
     /// directional movement, so an existing flat configuration is unaffected.
     pub at: Option<(usize, usize)>,
+    /// The check that decides this node's state, run by `whisker collect`.
+    pub alert: Option<Alert>,
 }
 
 /// The optional 2D arrangement of views.
@@ -112,6 +114,39 @@ impl State {
             _ => None,
         }
     }
+}
+
+/// What makes a node's check count as an alert.
+///
+/// Both reuse the existing `command` mechanism, so there is no new trust
+/// boundary and no new evaluator: an alert is the same kind of thing a segment
+/// already is, a local program run with argv.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum When {
+    /// The command printed something. Suits a check that lists problems and
+    /// says nothing when there are none.
+    Output,
+    /// The command exited non-zero. Suits a check written as an assertion.
+    Exit,
+}
+
+impl When {
+    fn parse(text: &str, what: &str) -> Result<Self, String> {
+        match text {
+            "output" => Ok(When::Output),
+            "exit" => Ok(When::Exit),
+            other => Err(format!(
+                "{what}.when is {other}; use output or exit"
+            )),
+        }
+    }
+}
+
+/// A node's check: what to run, and what counts as an alert.
+#[derive(Clone, Debug)]
+pub struct Alert {
+    pub command: Vec<String>,
+    pub when: When,
 }
 
 /// A direction to move in, from a directional key.
@@ -562,6 +597,7 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
                 "label_style",
                 "separator_style",
                 "at",
+                "alert",
             ],
             &format!("view.{name}"),
         )?;
@@ -613,6 +649,41 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
             .map(|value| Style::parse(value, &format!("view.{name}.separator_style")))
             .transpose()?
             .unwrap_or_default();
+        let alert = match table.get("alert") {
+            None => None,
+            Some(value) => {
+                let what = format!("view.{name}.alert");
+                let alert_table = value
+                    .as_table()
+                    .ok_or_else(|| format!("{what} must be a table"))?;
+                known_keys(alert_table, &["command", "when"], &what)?;
+                let command: Vec<String> = alert_table
+                    .get("command")
+                    .ok_or_else(|| format!("{what} must set command"))?
+                    .as_array()
+                    .ok_or_else(|| format!("{what}.command must be an array of strings"))?
+                    .iter()
+                    .map(|item| as_str(item, &format!("{what}.command entry")))
+                    .collect::<Result<_, _>>()?;
+                if command.is_empty() {
+                    return Err(format!("{what}.command must name a program"));
+                }
+                // `when` has no safe default: "printed something" and "exited
+                // non-zero" disagree for most commands, and guessing wrong
+                // means either constant alerts or none at all.
+                let when = When::parse(
+                    &as_str(
+                        alert_table
+                            .get("when")
+                            .ok_or_else(|| format!("{what} must set when"))?,
+                        &format!("{what}.when"),
+                    )?,
+                    &what,
+                )?;
+                Some(Alert { command, when })
+            }
+        };
+
         let names: Vec<String> = table
             .get("segments")
             .ok_or_else(|| format!("view.{name} must set segments"))?
@@ -639,6 +710,7 @@ pub fn parse(text: &str, origin: Option<PathBuf>) -> Result<Config, String> {
             label_style,
             separator_style,
             at,
+            alert,
             segments: names
                 .iter()
                 .map(|segment_name| {

@@ -33,6 +33,12 @@ segments = ["directory", "kubernetes"]
 #
 # [view.ops]
 # at = ["infra", "ops"]     # this view's place on the grid
+# alert = { command = ["check-ops"], when = "exit" }
+#
+# `whisker collect` runs each view's alert command and writes the state file.
+# when = "exit" alerts on a non-zero exit; when = "output" alerts when the
+# command prints anything. Run it from cron or a background loop, never from
+# the prompt: the checks are the slow part.
 #
 # The state file is one line per view, "NAME STATUS [anything else]", with
 # STATUS being ok, alert, or unknown. Something else writes it on its own

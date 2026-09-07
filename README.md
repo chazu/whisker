@@ -171,6 +171,7 @@ target/debug/whisker render --view ops --columns 80 --color never
 target/debug/whisker view next --current dev
 target/debug/whisker view move --direction right --current dev
 target/debug/whisker view grid
+target/debug/whisker collect
 target/debug/whisker view list
 target/debug/whisker view start
 target/debug/whisker config path
@@ -250,6 +251,44 @@ content cannot reach the row.
 Note the freshness limit this implies. Bash defers signal handlers while
 Readline waits for a keystroke, so nothing can repaint the prompt on its own.
 The grid is as fresh as your last keystroke, not as fresh as the world.
+
+### Collecting node state
+
+Whisker can write that file itself. Give a view an `alert` and run
+`whisker collect`:
+
+```toml
+[view.infra_prod]
+segments = ["directory", "kubernetes"]
+at = ["infra", "prod"]
+alert = { command = ["kubectl", "get", "events", "--field-selector", "type=Warning"], when = "output" }
+
+[view.infra_ops]
+segments = ["directory"]
+at = ["infra", "ops"]
+alert = { command = ["check-ops"], when = "exit" }
+```
+
+`when = "output"` alerts when the command prints something, which suits a check
+that lists problems and stays quiet otherwise. `when = "exit"` alerts on a
+non-zero exit, which suits a check written as an assertion. There is no default,
+because the two disagree for most commands and guessing wrong means either
+constant alerts or none at all.
+
+Run `whisker collect` from cron, a systemd timer, or a loop in a background
+shell. It is deliberately not run from the prompt: one Kubernetes check takes
+about 29 ms, and nine of them would be a quarter of a second added to every
+command you type.
+
+```sh
+while :; do whisker collect >/dev/null; sleep 30; done &
+```
+
+A check that cannot run at all leaves its node `unknown` rather than `ok`,
+because a checker that is missing has not reported that things are fine. A view
+with no `alert` is left out of the file entirely rather than being invented as
+`ok`. The file is replaced through a temporary and a rename, so a prompt reading
+at the same moment sees either the old contents or the new ones, never a mixture.
 
 Known limits. Collectors are synchronous and local, so a slow Git repository or
 custom command delays a redraw; there are no timeouts. Styling is static: it

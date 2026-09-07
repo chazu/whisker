@@ -1,13 +1,13 @@
 # Design: a navigable grid of prompts
 
-**Status:** proposal, with three pieces built. `atomic` and `fallback` on
-segments have landed, closing the correctness gap that made a truncated grid
-dangerous; so have grid coordinates and 2D movement (`[grid]`, `at`,
-`view move`, `view grid`); and so has reading per-node state from a file
-(`grid.state`). The picture itself has not: design D exists as two working
-prototypes, `docs/probes/pixelgrid.py` for rendering and
-`docs/probes/pixelgrid.rs` for the Rust implementation and its cost. Nothing
-yet *writes* the state file, so a user must supply their own collector.
+**Status:** proposal, with the navigation and state halves built. `atomic` and
+`fallback` on segments have landed, closing the correctness gap that made a
+truncated grid dangerous; so have grid coordinates and 2D movement (`[grid]`,
+`at`, `view move`, `view grid`), reading per-node state (`grid.state`), and the
+collector that writes it (`alert`, `whisker collect`). What remains is the
+picture: design D exists as two working prototypes, `docs/probes/pixelgrid.py`
+for rendering and `docs/probes/pixelgrid.rs` for the Rust implementation and
+its cost, but nothing draws it in the prompt yet.
 **Question:** can the prompt show a small map of a 2D grid of prompt contexts,
 mark where you are, and flag nodes with new information, without disturbing the
 command you are typing?
@@ -344,6 +344,11 @@ alert.when = "output"
 information the user should be aware of", and it needs somewhere to remember the
 previous value.
 
+*Built, in part:* `output` and `exit` exist, on a view rather than a separate
+`[node]` table, since a node is a view with coordinates. `changed` does not, for
+exactly the reason given above: it needs somewhere to keep the previous value,
+and that store does not exist yet.
+
 ### When it is collected
 
 This is where the async constraint bites. Collecting every node's alert on every
@@ -542,27 +547,26 @@ Two implementation notes that the measurement forced:
 
 ## Nothing updates yet
 
-*Partly resolved.* The reading half is built: `grid.state` names a file, one
-line per view, that anything may write, and `view grid` reports what it says.
-So the grid now shows real state rather than a fixed picture, provided
-something writes that file.
+*Resolved.* Both halves are built. `grid.state` names a file of one line per
+view that anything may write, and `whisker collect` is the something that
+writes it: it runs each view's `alert` command on whatever schedule cron or a
+background loop gives it, and the prompt only reads the result.
 
-What is still missing is a **collector**: a process that runs each node's check
-on its own schedule and writes the file. Until one exists the state is whatever
-the user's own script puts there, which is a usable answer for anyone willing
-to write ten lines of shell, and no answer at all for anyone else.
-
-The original list, with what remains:
+The original list, with what became of it:
 
 1. ~~**A source of node state.**~~ Built, as `grid.state`.
-2. **A collector** that polls each node's `alert.command` on its own schedule
-   and writes that file. This is the part that cannot be inline, because
-   nine Kubernetes checks would add a quarter of a second to every prompt.
+2. ~~**A collector** that polls each node's `alert.command`.~~ Built, as
+   `whisker collect`. It stays out of the prompt for the reason that shaped
+   this whole design: nine Kubernetes checks would add a quarter of a second to
+   every command typed.
 3. **A refresh path.** The prompt hook reads the file, so state advances when a
    prompt is drawn or a key is pressed. Remember that
    [async is not available](#async-is-not-available): the grid is as fresh as
    the last keystroke, not as fresh as the world, and the UI should not imply
    otherwise.
+
+What is left is the display. The state is real and moving; nothing draws it as
+a picture yet.
 
 ## What could go wrong
 
@@ -606,7 +610,9 @@ The original list, with what remains:
    format, so anything can write it. `grid.state` names the file, `view grid`
    reports each cell as `name:status`, and every way the file can be wrong
    leaves that node `unknown` rather than failing.
-5. **A collector** that populates the file on a schedule.
+5. **A collector** that populates the file on a schedule. *Built.* `whisker
+   collect` runs each view's `alert` command and writes the state file; run it
+   from cron or a background loop.
 6. **Overlay (C)** for the full map.
 
 Steps 1 to 3 are useful alone: a grid you can move through is worth having even
