@@ -45,7 +45,9 @@ segments = ["directory", "kubernetes"]
 #
 # [segment.aws]
 # command = ["aws", "configure", "get", "region"]
-# prefix = "aws:"
+# prefix = "aws:"           # prefix and suffix wrap the value, and survive
+# suffix = ""               # shortening, so an icon is never eaten first
+# style = { fg = "yellow" }
 #
 # [view.cloud]
 # label = "[cloud] "

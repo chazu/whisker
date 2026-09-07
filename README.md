@@ -18,9 +18,10 @@ It uses its own prompt/startup file and does not load your usual Bash aliases or
 functions. Type `exit` to return to the original shell. No dotfiles are modified
 and no command history is saved by this session.
 
-Press **Alt-O** to cycle the configured views; by default **dev → ops → minimal
-→ dev**. If your macOS terminal uses Option for accented characters, configure
-Option as Esc/Meta; pressing **Esc, then O (lowercase)** also sends the binding.
+Press **Alt-O** to cycle the configured views; by default **dev → ops →
+minimal → dev**. If your macOS terminal uses Option for accented characters,
+configure Option as Esc/Meta; pressing **Esc, then O (lowercase)** also sends
+the binding.
 
 | Default view | Information row |
 | --- | --- |
@@ -76,18 +77,22 @@ shrink from their end.
 ### Styling
 
 Colour is structured configuration rather than text you embed, and it is applied
-after the row is laid out. Widths are therefore always measured on plain text, so
-an escape sequence is never counted as a column nor cut in half by shortening.
+after the row is laid out. Widths are therefore always measured on plain text,
+so an escape sequence is never counted as a column nor cut in half by
+shortening.
 
 ```toml
+views = ["dev"]
+
 [view.dev]
 label = "dev "
 label_style = { fg = "green", bold = true }
 separator_style = { fg = "bright_black" }
-style = { dim = true }                      # default for this view's segments
+style = { dim = true }            # default for this view's segments
+segments = ["directory", "git"]
 
 [segment.git]
-style = { fg = "red" }                      # a segment's own style wins
+style = { fg = "red" }            # a segment's own style wins, field by field
 ```
 
 `fg` and `bg` take one of the eight colour names (`red`, `green`, `yellow`,
@@ -101,8 +106,8 @@ overrides the view's for the fields it sets; the rest are inherited.
 captured into a shell variable rather than written to a terminal, so `auto`
 cannot detect a TTY: it honours `NO_COLOR` and `TERM=dumb` and otherwise assumes
 colour is wanted. Following the NO_COLOR standard, the variable counts only when
-it is present and not empty, whatever its value. Every styled piece resets afterwards, so nothing leaks into
-the command you type.
+it is present and not empty, whatever its value. Every styled piece resets
+afterwards, so nothing leaks into the command you type.
 
 A configuration mistake is reported rather than ignored: an unknown key, a view
 listed in `views` without a definition, or a `start` naming no view all fail
@@ -120,11 +125,12 @@ shows `⎈ unavailable`. It does not query the cluster.
 Rust reads the configuration, collects each segment of the selected view, and
 emits a plain text information row, shortening the longest shrinkable segment
 first to keep the row within the terminal width. Bash prints that row from its
-prompt hook; PS1 itself is the stable input marker. This avoids Readline caching an obsolete
-information row. Bash stores the selected view in memory and refreshes before
-each prompt and on Alt-O. The inputrc macro forwards Alt-O to a private sequence
-connected to a Bash function with `bind -x`. Ctrl-L repaints both rows. The first
-Alt-O after resizing also performs a full repaint to recover the row positions.
+prompt hook; PS1 itself is the stable input marker. This avoids Readline
+caching an obsolete information row. Bash stores the selected view in memory
+and refreshes before each prompt and on Alt-O. The inputrc macro forwards Alt-O
+to a private sequence connected to a Bash function with `bind -x`. Ctrl-L
+repaints both rows. The first Alt-O after resizing also performs a full repaint
+to recover the row positions.
 
 Try typing a command, moving the cursor into its middle, and switching views.
 Also try long wrapped input, `cd` into a Git checkout, Ctrl-L, and terminal
@@ -138,12 +144,18 @@ target/debug/whisker render --view ops --columns 80 --color always
 target/debug/whisker render --view ops --columns 80 --color never
 target/debug/whisker view next --current dev
 target/debug/whisker view list
+target/debug/whisker view start
+target/debug/whisker config path
 target/debug/whisker config check
 ```
 
+`view list` and `view start` are what the shell layer uses, so it never hard
+codes a view name.
+
 Known limits. Collectors are synchronous and local, so a slow Git repository or
 custom command delays a redraw; there are no timeouts. Styling is static: it
-cannot yet depend on state, so "red when the branch is dirty" is not expressible.
+cannot yet depend on state, so "red when the branch is dirty" cannot be
+expressed.
 Control characters are still stripped from all collected text and from labels,
 so metadata can never move the cursor; colour arrives only through the `style`
 tables. There is no daemon and no general integration with existing prompt
