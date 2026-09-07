@@ -16,6 +16,7 @@ python3 -m venv .venv && .venv/bin/pip install pyte
 .venv/bin/python docs/probes/async.py           # can a signal repaint mid-typing?
 .venv/bin/python docs/probes/statefile.py       # background state + refresh key
 .venv/bin/python docs/probes/altscreen.py       # design C; see the caveat below
+.venv/bin/python docs/probes/graphics.py        # design D; sixel and \[ \] accounting
 ```
 
 The Bash probes need Bash 5+ (`/opt/homebrew/bin/bash` on this machine; edit the
@@ -29,5 +30,10 @@ Two worth rerunning if you doubt the document:
   buffer (mode 1049), so the overlay appears to leak onto the main screen.
   Source `altscreen.bash` in a real terminal and press Alt-O to test design C
   properly.
+- `graphics.py` decides design D on two grounds an emulator can judge: the real
+  binary blanks a sixel via `clean`, and a prompt that under-reports its width
+  misplaces the cursor. Whether a terminal *draws* the image is left to
+  `graphics.bash`, which must be sourced in a real terminal, and which is not
+  needed to reach the conclusion.
 
 `configs/` holds the Whisker configurations `integration.py` renders.

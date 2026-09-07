@@ -1,0 +1,5 @@
+views = ["g"]
+[view.g]
+segments = ["directory", "picture"]
+[segment.picture]
+command = ["printf", "%b", "\\033Pq#0;2;100;0;0#0~~@@vv@@~~$-#0??}}GG}}??-\\033\\\\"]

@@ -80,7 +80,7 @@ The consequence to state plainly in the UI: **an alert is as fresh as your last
 keystroke, not as fresh as the world.** A design that implies otherwise would be
 lying to the user.
 
-## Three designs
+## Four designs
 
 ### A. Inline strip, one row (recommended first step)
 
@@ -167,6 +167,45 @@ terminal or multiplexer that does not support the mode degrades badly.
   and it competes with the pager the user may already be in. Behaviour on
   terminals lacking `1049` is unknown and must be checked.
 - **Best for:** a "show me everything" key rather than routine movement.
+
+### D. Sixel or the kitty graphics protocol (rejected)
+
+The obvious question, since a grid is a picture: draw it as one. Ghostty, which
+this was developed on, supports both sixel and the kitty protocol, so it is not
+an idle idea. It is still the wrong tool here, for three reasons in increasing
+order of severity.
+
+**Readline cannot measure a picture.** Bash needs the printing width of PS1 to
+place the cursor. Non-printing bytes go inside `\[ \]`, which means "these
+occupy zero columns". An image is not zero columns, so both choices are wrong:
+leave the escape unwrapped and Readline counts the payload's *bytes* as columns;
+wrap it and Readline believes the image takes no space at all. Measured with a
+prompt that makes the second claim about ten visible characters, Ctrl-A put the
+cursor at column 0 while the command's first character was at column 12. Every
+editing operation inherits that error. Padding with spaces to cover the image
+only relocates the problem onto the font's cell size, which the prompt does not
+know.
+
+**It would require weakening the one defence that matters.** `clean` replaces
+every control character with a space, and that single rule is what makes an
+untrusted state file safe (see [Alerts](#when-it-is-collected)). Graphics are
+delivered by `ESC P ... ESC \` or `ESC _G ... ESC \`, so a picture segment
+means permitting device-control strings through the very function that exists
+to strip them. Verified against the real binary: the sixel came out as inert
+text with its introducer and terminator blanked, which is `clean` doing its
+job. Trading that for a prettier grid is a bad exchange, and it is the reason
+this is rejected outright rather than merely deferred.
+
+**It buys nothing over text.** The strip in design A is nine glyphs. Unicode
+already draws circles, and the terminal already colours them. A picture would
+add pixel-accurate node shapes that nobody needs, at the cost of portability to
+every terminal and multiplexer without graphics support, where it degrades not
+to a plain grid but to a screenful of payload garbage.
+
+The probes are `graphics.py` for what an emulator can decide and
+`graphics.bash` for what only a real terminal can. The second is written but
+not run here; the first two reasons are sufficient to reject D, so the third
+question, of whether Ghostty draws it nicely, does not need an answer.
 
 **Recommendation:** build A, then add C as an on-demand overlay. Treat B's
 always-visible block as opt-in, since its permanent row cost is the largest
@@ -360,6 +399,8 @@ emulator. Each probe drove an actual interactive shell.
 | Alert count from a state file | Works; segment and separator vanish at zero |
 | Hostile state file (`ESC[2J`, extra line) | Already neutralised by the existing `clean` and first-line rules |
 | `view next` as 2D movement | Single ring only; 2D needs a new subcommand |
+| Sixel through the real binary | Blanked by `clean` to inert text; graphics need that defence relaxed |
+| Prompt that under-reports its width | Ctrl-A put the cursor at column 0 against text at column 12 |
 
 The async result is the one that matters, because it converts "live dashboard"
 into "map that updates when you touch it". Better to know that before building
