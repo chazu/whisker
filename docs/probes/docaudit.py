@@ -59,7 +59,7 @@ else:
         return None
     four = size_of("3x3 grid, 4px dots")
     five = size_of("3x3 grid, 5px dots")
-    panels = size_of("4 grids side by side")
+    panels = size_of("4 independent panels")
     tall = size_of("7x3 grid, 4px dots")
     # Each figure appears in both the cost table and the appendix, so require
     # the expected number of occurrences rather than merely one: otherwise
@@ -71,6 +71,9 @@ else:
     # "Several grids at once", the cost table, and the appendix.
     check("doc quotes the real four-panel payload in all three places",
           doc.count(str(panels)) == 3, f"{panels}, seen {doc.count(str(panels))}x")
+    check("the benchmark measures independent panels, not one wide grid",
+          re.search(r"^  4 independent panels, 4 cells", out, re.M) is not None
+          and "four independent 3x3 panels" in doc)
     check("doc quotes the real 7-row payload", f"{tall} bytes" in doc, str(tall))
     check("doc's 7-rows-per-cell claim matches the benchmark",
           re.search(r"^  7x3 grid, 4px dots, 1 cell\s+[\d.]+ us", out, re.M) is not None

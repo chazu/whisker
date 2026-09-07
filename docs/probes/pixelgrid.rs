@@ -252,16 +252,22 @@ pub fn render_png(grid: &Grid, img_w: usize, img_h: usize) -> Option<Vec<u8>> {
         }
     }
 
-    let mut png = Vec::with_capacity(raw.len() + 128);
+    Some(encode_png(&raw, img_w, img_h))
+}
+
+/// Wrap finished scanlines in a PNG container. Shared by the single-grid and
+/// multi-panel paths so there is one encoder to get right.
+fn encode_png(raw: &[u8], img_w: usize, img_h: usize) -> Vec<u8> {
+    let mut png = Vec::with_capacity(raw.len() / 8 + 128);
     png.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
     let mut ihdr = Vec::with_capacity(13);
     ihdr.extend_from_slice(&(img_w as u32).to_be_bytes());
     ihdr.extend_from_slice(&(img_h as u32).to_be_bytes());
     ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA
     chunk(&mut png, b"IHDR", &ihdr);
-    chunk(&mut png, b"IDAT", &zlib_deflate(&raw));
+    chunk(&mut png, b"IDAT", &zlib_deflate(raw));
     chunk(&mut png, b"IEND", &[]);
-    Some(png)
+    png
 }
 
 fn base64(data: &[u8]) -> String {
@@ -282,7 +288,17 @@ fn base64(data: &[u8]) -> String {
 /// cursor pinned so the prompt's declared width stays honest.
 pub fn placement(grid: &Grid, cell: (usize, usize), cells: usize) -> Option<String> {
     let png = render_png(grid, cells * cell.0, cell.1)?;
-    let payload = base64(&png);
+    Some(escape_for(&png, cells))
+}
+
+/// The same, for several independent panels sharing one image.
+pub fn panels_placement(set: &Panels, cell: (usize, usize), cells: usize) -> Option<String> {
+    let png = render_panels_png(set, cells * cell.0, cell.1)?;
+    Some(escape_for(&png, cells))
+}
+
+fn escape_for(png: &[u8], cells: usize) -> String {
+    let payload = base64(png);
     let mut out = String::with_capacity(payload.len() + 64);
     // Small images fit one chunk; the protocol caps a chunk at 4096 bytes.
     let mut rest = payload.as_str();
@@ -301,7 +317,63 @@ pub fn placement(grid: &Grid, cell: (usize, usize), cells: usize) -> Option<Stri
         }
         rest = tail;
     }
-    Some(out)
+    out
+}
+
+/// Several independent grids laid out left to right in one image.
+///
+/// This is the "multiple panels in adjacent cells" case. They are separate
+/// grids, each with its own nodes and its own current/alert state, but they
+/// are drawn as a *single* placement so the prompt has one width to declare
+/// rather than several.
+pub struct Panels {
+    pub panels: Vec<Grid>,
+    /// Blank pixels between panels, so they read as separate maps rather than
+    /// one wide one. Distinct from the gap between dots inside a panel.
+    pub gutter: usize,
+}
+
+impl Panels {
+    fn art_size(&self) -> (usize, usize) {
+        let mut width = 0;
+        let mut height = 0;
+        for (i, panel) in self.panels.iter().enumerate() {
+            let (w, h) = panel.art_size();
+            width += w + if i + 1 < self.panels.len() { self.gutter } else { 0 };
+            height = height.max(h);
+        }
+        (width, height)
+    }
+}
+
+/// Paint several panels into one RGBA PNG.
+pub fn render_panels_png(set: &Panels, img_w: usize, img_h: usize) -> Option<Vec<u8>> {
+    let (art_w, art_h) = set.art_size();
+    if art_w > img_w || art_h > img_h {
+        return None;
+    }
+    let stride = 1 + img_w * 4;
+    let mut raw = vec![0u8; stride * img_h];
+    let mut x_cursor = (img_w - art_w) / 2;
+    for panel in &set.panels {
+        let (pw, ph) = panel.art_size();
+        let step = panel.dot + panel.gap;
+        let oy = (img_h - ph) / 2; // each panel vertically centred in the row
+        for (r, row) in panel.cells.chunks(panel.cols).enumerate() {
+            for (c, state) in row.iter().enumerate() {
+                let rgba = state.rgba();
+                for dy in 0..panel.dot {
+                    let y = oy + r * step + dy;
+                    let base = y * stride + 1 + (x_cursor + c * step) * 4;
+                    for dx in 0..panel.dot {
+                        raw[base + dx * 4..base + dx * 4 + 4].copy_from_slice(&rgba);
+                    }
+                }
+            }
+        }
+        x_cursor += pw + set.gutter;
+    }
+    Some(encode_png(&raw, img_w, img_h))
 }
 
 fn grid_of(rows: usize, cols: usize, dot: usize) -> Grid {
@@ -311,6 +383,42 @@ fn grid_of(rows: usize, cols: usize, dot: usize) -> Grid {
         cells[cols + 2] = State::Alert;
     }
     Grid { rows, cols, cells, dot, gap: 1 }
+}
+
+/// `count` independent 3x3 panels, each with its own marked node, so the
+/// benchmark measures the real layout rather than one wide grid.
+fn panels_of(count: usize, dot: usize, gutter: usize) -> Panels {
+    let panels = (0..count)
+        .map(|i| {
+            let mut cells = vec![State::Idle; 9];
+            // Give each panel a different state, which is the point of having
+            // more than one: they are not copies.
+            cells[4] = State::Current;
+            cells[(i * 2) % 9] = if i % 2 == 0 { State::Alert } else { State::Ok };
+            Grid { rows: 3, cols: 3, cells, dot, gap: 1 }
+        })
+        .collect();
+    Panels { panels, gutter }
+}
+
+fn bench_panels(label: &str, set: &Panels, cell: (usize, usize), cells: usize) {
+    let Some(first) = panels_placement(set, cell, cells) else {
+        println!("  {label:<34} does not fit");
+        return;
+    };
+    let runs = 10_000;
+    let start = Instant::now();
+    let mut sink = 0usize;
+    for _ in 0..runs {
+        sink += panels_placement(set, cell, cells).map_or(0, |s| s.len());
+    }
+    let each = start.elapsed() / runs;
+    assert!(sink > 0);
+    println!(
+        "  {label:<34} {:>7.1} us   {} bytes",
+        each.as_secs_f64() * 1e6,
+        first.len()
+    );
 }
 
 fn bench(label: &str, grid: &Grid, cell: (usize, usize), cells: usize) {
@@ -387,12 +495,161 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_grids_share_one_placement() {
-        // Four grids in four cells is still a single escape, so the prompt has
-        // one width to account for rather than four.
-        let esc = placement(&grid_of(3, 12, 8), (32, 68), 4).expect("fits");
+    fn adjacent_panels_share_one_placement() {
+        // Four independent panels in four cells is still a single escape, so
+        // the prompt has one width to account for rather than four.
+        let set = panels_of(4, 8, 6);
+        let esc = panels_placement(&set, (32, 68), 4).expect("fits");
         assert_eq!(esc.matches("a=T").count(), 1);
         assert!(esc.contains("c=4,r=1"));
+    }
+
+    /// Inflate the fixed-Huffman stream this file produces, so tests can look
+    /// at the pixels that were actually painted. Writing the decoder is worth
+    /// it twice over: it round-trips the hand-written encoder, which is the
+    /// part most likely to be subtly wrong.
+    fn inflate_stored_or_fixed(png: &[u8]) -> Vec<u8> {
+        let mut idat = Vec::new();
+        let mut pos = 8;
+        while pos < png.len() {
+            let n = u32::from_be_bytes(png[pos..pos + 4].try_into().unwrap()) as usize;
+            if &png[pos + 4..pos + 8] == b"IDAT" {
+                idat.extend_from_slice(&png[pos + 8..pos + 8 + n]);
+            }
+            pos += 12 + n;
+        }
+        let body = &idat[2..]; // skip the zlib header
+        let mut bit = 0usize;
+        let mut take = |count: usize, bit: &mut usize| -> u32 {
+            let mut v = 0;
+            for k in 0..count {
+                let byte = body[*bit / 8];
+                v |= (((byte >> (*bit % 8)) & 1) as u32) << k;
+                *bit += 1;
+            }
+            v
+        };
+        let mut take_code = |count: usize, bit: &mut usize| -> u32 {
+            let mut v = 0;
+            for _ in 0..count {
+                let byte = body[*bit / 8];
+                v = (v << 1) | ((byte >> (*bit % 8)) & 1) as u32;
+                *bit += 1;
+            }
+            v
+        };
+
+        let _final = take(1, &mut bit);
+        let kind = take(2, &mut bit);
+        assert_eq!(kind, 1, "only fixed-Huffman blocks are produced");
+
+        const LENGTHS: [(u32, u32, u32); 29] = [
+            (257, 0, 3), (258, 0, 4), (259, 0, 5), (260, 0, 6), (261, 0, 7),
+            (262, 0, 8), (263, 0, 9), (264, 0, 10), (265, 1, 11), (266, 1, 13),
+            (267, 1, 15), (268, 1, 17), (269, 2, 19), (270, 2, 23), (271, 2, 27),
+            (272, 2, 31), (273, 3, 35), (274, 3, 43), (275, 3, 51), (276, 3, 59),
+            (277, 4, 67), (278, 4, 83), (279, 4, 99), (280, 4, 115), (281, 5, 131),
+            (282, 5, 163), (283, 5, 195), (284, 5, 227), (285, 0, 258),
+        ];
+
+        let mut out: Vec<u8> = Vec::new();
+        loop {
+            // Fixed literal/length decoding, per RFC 1951 section 3.2.6.
+            let mut code = take_code(7, &mut bit);
+            let symbol = if code <= 0b0010111 {
+                code + 256
+            } else {
+                code = (code << 1) | take_code(1, &mut bit);
+                if code <= 0b10111111 {
+                    code - 0b00110000
+                } else if code <= 0b11000111 {
+                    code - 0b11000000 + 280
+                } else {
+                    code = (code << 1) | take_code(1, &mut bit);
+                    code - 0b110010000 + 144
+                }
+            };
+            if symbol == 256 {
+                break;
+            }
+            if symbol < 256 {
+                out.push(symbol as u8);
+                continue;
+            }
+            let entry = LENGTHS[(symbol - 257) as usize];
+            let mut length = entry.2;
+            if entry.1 > 0 {
+                length += take(entry.1 as usize, &mut bit);
+            }
+            let distance = take_code(5, &mut bit) + 1;
+            for _ in 0..length {
+                let byte = out[out.len() - distance as usize];
+                out.push(byte);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_encoder_round_trips_through_our_own_inflater() {
+        // If the encoder and decoder disagree, one of them is wrong, and the
+        // encoder is the one a terminal will see.
+        let png = render_png(&grid_of(3, 3, 8), 32, 68).expect("fits");
+        let raw = inflate_stored_or_fixed(&png);
+        assert_eq!(raw.len(), (1 + 32 * 4) * 68);
+        // Corner is transparent; the centre dot is opaque white.
+        assert_eq!(raw[1 + 3], 0);
+        let stride = 1 + 32 * 4;
+        let y = (68 - 26) / 2 + 8 + 1 + 4;
+        let x = (32 - 26) / 2 + 8 + 1 + 4;
+        assert_eq!(&raw[y * stride + 1 + x * 4..y * stride + 1 + x * 4 + 4],
+                   &[240, 240, 240, 255]);
+    }
+
+    #[test]
+    fn panels_are_separated_by_the_gutter() {
+        // Panels must read as separate maps rather than one wide grid. Check
+        // the painted pixels, not the arithmetic: inflate the image back and
+        // count the runs of ink across the middle row of dots.
+        let set = panels_of(3, 8, 6);
+        let png = render_panels_png(&set, 96, 68).expect("fits");
+        let raw = inflate_stored_or_fixed(&png);
+        let stride = 1 + 96 * 4;
+
+        // The row through the centre of the middle dot row.
+        let (_, art_h) = set.art_size();
+        let y = (68 - art_h) / 2 + 8 + 1 + 4;
+        let mut groups = 0;
+        let mut prev_ink = false;
+        for x in 0..96 {
+            let alpha = raw[y * stride + 1 + x * 4 + 3];
+            let ink = alpha > 0;
+            if ink && !prev_ink {
+                groups += 1;
+            }
+            prev_ink = ink;
+        }
+        // Three panels of three dots each, separated by gutters wider than the
+        // intra-panel gap, gives nine runs rather than one.
+        assert_eq!(groups, 9, "expected 9 dot runs, saw {groups}");
+    }
+
+    #[test]
+    fn panels_keep_their_own_state() {
+        // The point of several panels is that they differ. If they were copies
+        // the feature would be pointless, so assert they are not.
+        let set = panels_of(3, 8, 6);
+        let first: Vec<_> = set.panels[0].cells.clone();
+        assert!(
+            set.panels.iter().any(|p| p.cells != first),
+            "all panels had identical state"
+        );
+    }
+
+    #[test]
+    fn oversized_panels_refuse_rather_than_clipping() {
+        let set = panels_of(8, 8, 6);
+        assert!(render_panels_png(&set, 32, 68).is_none());
     }
 
     #[test]
@@ -413,10 +670,23 @@ fn dump(dot: usize) {
     std::io::stdout().write_all(&png).unwrap();
 }
 
+/// Same, for a panel set, so the multi-panel layout can be verified by an
+/// independent decoder rather than by eye.
+fn dump_panels(count: usize) {
+    use std::io::Write;
+    let set = panels_of(count, 8, 6);
+    let png = render_panels_png(&set, count * 32, 68).expect("fits");
+    std::io::stdout().write_all(&png).unwrap();
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 2 && args[1] == "--dump" {
         dump(args[2].parse().expect("dot size"));
+        return;
+    }
+    if args.len() > 2 && args[1] == "--dump-panels" {
+        dump_panels(args[2].parse().expect("panel count"));
         return;
     }
 
@@ -438,15 +708,16 @@ fn main() {
     }
 
     println!();
-    // Several independent grids in adjacent cells: one image spanning them all,
-    // since a single placement is cheaper than N placements and keeps the
-    // width accounting to one number.
-    for cells in [2, 3, 4] {
-        bench(
-            &format!("{cells} grids side by side, {cells} cells"),
-            &grid_of(3, 3 * cells, 4 * dpr),
+    // Several *independent* grids in adjacent cells, each with its own state,
+    // drawn as one image spanning them all. One placement rather than N keeps
+    // the width accounting to a single number.
+    for count in [2, 3, 4] {
+        let set = panels_of(count, 4 * dpr, 3 * dpr);
+        bench_panels(
+            &format!("{count} independent panels, {count} cells"),
+            &set,
             cell,
-            cells,
+            count,
         );
     }
 

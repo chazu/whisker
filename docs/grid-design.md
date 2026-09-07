@@ -475,7 +475,8 @@ of them:
 [grid.display]
 mode = "pixels"
 panels = ["environments", "services", "queues"]   # left to right, one cell each
-gap_cells = 0            # blank cells between panels, if separation helps
+gutter = 3               # points between panels; must exceed `gap` or the
+                         # panels merge into one wide grid
 
 [panel.environments]
 rows = ["code", "infra", "data"]
@@ -484,8 +485,10 @@ columns = ["ops", "staging", "prod"]
 
 One placement rather than N matters for correctness as much as speed: the
 prompt then has one width to declare instead of several, so there is one number
-to get right. Measured, four 3x3 panels across four cells is a single escape of
-3551 bytes built in 175 us.
+to get right. Measured, four independent 3x3 panels across four cells is a
+single escape of 3575 bytes built in 185 us. The panels are separated by a
+gutter wider than the gap between dots, which is what makes them read as
+separate maps rather than one wide grid.
 
 Sparse grids need a decision: if `[node.data.prod]` is undefined, is it an empty
 cell you can move onto, or is it skipped? Skipping is friendlier; showing a hole
@@ -501,7 +504,7 @@ dots, encodes a PNG, base64s it and builds the escape:
 | --- | --- | --- |
 | 3x3 grid, 4px dots, one cell | 40 us | 991 bytes |
 | 3x3 grid, 5px dots, one cell | 42 us | 1135 bytes |
-| Four 3x3 panels, four cells | 175 us | 3551 bytes |
+| Four independent 3x3 panels, four cells | 185 us | 3575 bytes |
 | 7x3 grid, 4px dots, one cell | 48 us | 2035 bytes |
 
 Against the collectors this prompt already runs, at 2 ms for a directory, 5 ms
@@ -638,9 +641,10 @@ emulator. Each probe drove an actual interactive shell.
 | Ghostty graphics query | Replied `OK`; `TIOCGWINSZ` gave a 16x34 cell |
 | Ctrl-L, resize, scrollback with an image | Row invariants hold: command, prompt width and cursor column all preserved (9 checks) |
 | Whether the terminal re-draws the image itself | **Not established**; pyte has no image handling |
-| Cost of building a grid in Rust | 40 us for 3x3 at 4px dots; 175 us for four panels across four cells |
+| Cost of building a grid in Rust | 40 us for 3x3 at 4px dots; 185 us for four independent panels across four cells |
 | Payload with stored deflate blocks | 11841 bytes, far too fat to emit per prompt |
-| Payload with fixed-Huffman deflate | 991 bytes at 4px dots, 3551 for four panels |
+| Payload with fixed-Huffman deflate | 991 bytes at 4px dots, 3575 for four panels |
+| Panels drawn as one image | Verified pixel by pixel: 9 dot runs across 3 panels, merging to 1 without a gutter |
 | Hand-written PNG encoder | Decodes in Pillow at three dot sizes, every dot in the right place |
 | Rows per cell at 4-point dots on 2x | 7, not 8: the 8th correctly refuses |
 | Cell size from `TIOCGWINSZ` | 1280x816 for an 80x24 tty, giving a 16x34 cell |
